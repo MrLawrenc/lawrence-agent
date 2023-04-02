@@ -72,7 +72,6 @@ public class AttachMain {
          *             "}";
          * </pre>
          */
-
         inst.addTransformer(new ClassFileTransformer() {
             @SneakyThrows
             @Override
