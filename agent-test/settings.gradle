@@ -1,0 +1,3 @@
+rootProject.name = 'agent-test'
+include('bytebuddy-agent')
+//include('javassist-agent')

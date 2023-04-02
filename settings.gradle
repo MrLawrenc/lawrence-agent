@@ -1,0 +1,5 @@
+rootProject.name = 'lawrence-agent'
+
+include('my-skywalking')
+include('bytebuddy')
+include('agent-test')
