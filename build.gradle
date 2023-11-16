@@ -26,7 +26,6 @@ allprojects {
     dependencies {
         implementation "${hutool}"
         implementation "${slf4j}"
-        //implementation 'net.bytebuddy:byte-buddy:1.14.2'
         compileOnly 'org.projectlombok:lombok:1.18.18'
         annotationProcessor 'org.projectlombok:lombok:1.18.18'
         implementation 'junit:junit:4.12'
