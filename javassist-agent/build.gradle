@@ -21,6 +21,6 @@ jar {
         attributes "Manifest-Version": 1.0,
                 "Can-Redefine-Classes": true,
                 "Can-Retransform-Classes": true,
-                'Premain-Class': 'com.github.mrlawrenc.monitor.AttachMain'
+                'Premain-Class': 'com.lawrence.monitor.AttachMain'
     }
 }
