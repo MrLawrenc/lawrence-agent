@@ -1,0 +1,26 @@
+// parent-project/child1/build.gradle
+
+plugins {
+    id 'java'
+}
+
+group = 'com.lawrence.javassist'
+version = '1.0-SNAPSHOT'
+
+dependencies {
+    // 添加子项目特有的依赖
+    implementation 'org.javassist:javassist:3.27.0-GA'
+}
+jar {
+//    archiveName = "${rootProject.name}-${version}.jar"
+    manifest {
+        //Manifest-Version: 1.0
+        //Can-Redefine-Classes: true
+        //Can-Retransform-Classes: true
+        //Premain-Class: PreMainTraceAgent
+        attributes "Manifest-Version": 1.0,
+                "Can-Redefine-Classes": true,
+                "Can-Retransform-Classes": true,
+                'Premain-Class': 'com.github.mrlawrenc.monitor.AttachMain'
+    }
+}
