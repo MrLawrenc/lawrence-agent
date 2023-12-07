@@ -1,2 +1,4 @@
 rootProject.name = 'agent-all'
 include('javassist-agent','skywalking','bytebuddy-agnet')
+include 'agent-test'
+
