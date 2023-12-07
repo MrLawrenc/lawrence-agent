@@ -1,0 +1,9 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.lawrence.test'
+version = '1.0-SNAPSHOT'
+
+dependencies {
+}
