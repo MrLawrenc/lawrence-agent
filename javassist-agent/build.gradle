@@ -5,14 +5,17 @@ plugins {
 }
 
 group = 'com.lawrence.javassist'
-version = '1.0-SNAPSHOT'
+version = '1.0'
 
 dependencies {
     // 添加子项目特有的依赖
     implementation 'org.javassist:javassist:3.27.0-GA'
 }
 jar {
-//    archiveName = "${rootProject.name}-${version}.jar"
+    //定义包名
+    archivesBaseName = "${rootProject.name}"
+    archiveVersion = "${version}"
+    archiveClassifier = "SNAPSHOT"
     manifest {
         //Manifest-Version: 1.0
         //Can-Redefine-Classes: true
@@ -23,4 +26,6 @@ jar {
                 "Can-Retransform-Classes": true,
                 'Premain-Class': 'com.lawrence.monitor.AttachMain'
     }
+    configurations.implementation.setCanBeResolved(true)
+    from { configurations.implementation.collect { it.isDirectory() ? it : zipTree(it) } }
 }
