@@ -12,8 +12,9 @@ dependencies {
     implementation 'org.javassist:javassist:3.27.0-GA'
 }
 jar {
+    // archivesBaseName = "${rootProject.name}"
     //定义包名
-    archivesBaseName = "${rootProject.name}"
+    archivesBaseName = "${project.name}"
     archiveVersion = "${version}"
     archiveClassifier = "SNAPSHOT"
     manifest {
