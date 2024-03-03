@@ -14,6 +14,10 @@ dependencies {
 jar {
     // archivesBaseName = "${rootProject.name}"
     //定义包名
+    println("-->"+archiveBaseName)
+    println(getArchiveBaseName().get())
+    println(getArchiveVersion().get())
+    println("-->"+archiveBaseName)
     archivesBaseName = "${project.name}"
     archiveVersion = "${version}"
     archiveClassifier = "SNAPSHOT"
