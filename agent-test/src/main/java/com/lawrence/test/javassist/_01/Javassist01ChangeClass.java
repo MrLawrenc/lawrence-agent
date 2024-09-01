@@ -1,10 +1,11 @@
-package org.test.javassist;
+package com.lawrence.test.javassist._01;
 
 import javassist.*;
 
 import java.lang.reflect.Method;
 
-public class JavassistChangeClass01 {
+//jdk17 add VM option: --add-opens java.base/java.lang=ALL-UNNAMED
+public class Javassist01ChangeClass {
     public static void main(String[] args) throws Exception {
         ClassPool pool = ClassPool.getDefault();
         //创建类
