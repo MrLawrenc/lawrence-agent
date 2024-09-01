@@ -6,6 +6,8 @@ plugins {
 
 group = 'com.lawrence.javassist'
 version = '1.0'
+sourceCompatibility = JavaVersion.VERSION_17
+targetCompatibility = JavaVersion.VERSION_17
 
 dependencies {
     // 添加子项目特有的依赖
@@ -19,7 +21,8 @@ jar {
     println(getArchiveVersion().get())
     println("-->"+archiveBaseName)
     archivesBaseName = "${project.name}"
-    archiveVersion = "${version}"
+    println("archiveVersion:"+archiveVersion.getOrNull())
+    archiveVersion = "${archiveVersion.getOrNull()}_0.01"
     archiveClassifier = "SNAPSHOT"
     manifest {
         //Manifest-Version: 1.0
@@ -29,7 +32,7 @@ jar {
         attributes "Manifest-Version": 1.0,
                 "Can-Redefine-Classes": true,
                 "Can-Retransform-Classes": true,
-                'Premain-Class': 'com.lawrence.monitor.AttachMain'
+                'Premain-Class': 'com.lawrence.AttachMain'
     }
     configurations.implementation.setCanBeResolved(true)
     from { configurations.implementation.collect { it.isDirectory() ? it : zipTree(it) } }

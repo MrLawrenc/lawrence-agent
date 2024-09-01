@@ -14,7 +14,7 @@ public class AgentConfig {
     private JdbcConfig jdbcConfig;
     private ServletConfig servletConfig;
 
-    static AgentConfig init(Properties properties) {
+   public static AgentConfig init(Properties properties) {
         AgentConfig agentConfig = new AgentConfig();
         JdbcConfig jdbcConfig = new JdbcConfig();
         ServletConfig servletConfig = new ServletConfig();

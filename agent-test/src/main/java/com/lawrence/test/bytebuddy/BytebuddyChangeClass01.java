@@ -1,4 +1,4 @@
-package org.test.bytebuddy;
+package com.lawrence.test.bytebuddy;
 
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.asm.Advice;

@@ -5,9 +5,87 @@ plugins {
 group = 'com.lawrence.test'
 version = '1.0'
 compileJava.options.encoding("UTF-8")
+sourceCompatibility = JavaVersion.VERSION_17
+targetCompatibility = JavaVersion.VERSION_17
 
 dependencies {
 
     implementation 'org.javassist:javassist:3.27.0-GA'
     implementation 'net.bytebuddy:byte-buddy:1.14.2'
+    implementation('jakarta.servlet:jakarta.servlet-api:5.0.0')
+}
+
+
+tasks.register('jarJavassist02', Jar) {
+    String mainClass = "com.lawrence.test.javassist._02.Javassist02WriteJavaAgent"
+    String suffix = mainClass.substring(mainClass.lastIndexOf("."))
+    //定义包名
+    println("-->" + archiveBaseName)
+    println(getArchiveBaseName().get())
+    println(getArchiveVersion().get())
+    println("-->" + archiveBaseName)
+    archivesBaseName = "${project.name}"
+    archiveVersion = "${archiveVersion.getOrNull()}_${suffix}"
+    archiveClassifier = "BETA"
+    manifest {
+        //Manifest-Version: 1.0
+        //Can-Redefine-Classes: true
+        //Can-Retransform-Classes: true
+        //Premain-Class: PreMainTraceAgent
+        attributes "Manifest-Version": 1.0,
+                "Can-Redefine-Classes": true,
+                "Can-Retransform-Classes": true,
+                'Premain-Class': mainClass
+    }
+    configurations.implementation.setCanBeResolved(true)
+    from { configurations.implementation.collect { it.isDirectory() ? it : zipTree(it) } }
+}
+
+tasks.register('jarJavassist03', Jar) {
+    String mainClass = "com.lawrence.test.javassist.Javassist02WriteJavaAgent"
+    String suffix = mainClass.substring(mainClass.lastIndexOf("."))
+    //定义包名
+    println("-->" + archiveBaseName)
+    println(getArchiveBaseName().get())
+    println(getArchiveVersion().get())
+    println("-->" + archiveBaseName)
+    archivesBaseName = "${project.name}"
+    archiveVersion = "${archiveVersion.getOrNull()}_${suffix}"
+    archiveClassifier = "bBETA"
+    manifest {
+        //Manifest-Version: 1.0
+        //Can-Redefine-Classes: true
+        //Can-Retransform-Classes: true
+        //Premain-Class: PreMainTraceAgent
+        attributes "Manifest-Version": 1.0,
+                "Can-Redefine-Classes": true,
+                "Can-Retransform-Classes": true,
+                'Premain-Class': mainClass
+    }
+    configurations.implementation.setCanBeResolved(true)
+    from { configurations.implementation.collect { it.isDirectory() ? it : zipTree(it) } }
+}
+
+
+jar {
+    //定义包名
+    println("-->" + archiveBaseName)
+    println(getArchiveBaseName().get())
+    println(getArchiveVersion().get())
+    println("-->" + archiveBaseName)
+    archivesBaseName = "${project.name}"
+    archiveVersion = "${archiveVersion}"
+    archiveClassifier = "Javassist02"
+    manifest {
+        //Manifest-Version: 1.0
+        //Can-Redefine-Classes: true
+        //Can-Retransform-Classes: true
+        //Premain-Class: PreMainTraceAgent
+        attributes "Manifest-Version": 1.0,
+                "Can-Redefine-Classes": true,
+                "Can-Retransform-Classes": true,
+                'Premain-Class': 'com.lawrence.test.javassist.Javassist02WriteJavaAgent'
+    }
+    configurations.implementation.setCanBeResolved(true)
+    from { configurations.implementation.collect { it.isDirectory() ? it : zipTree(it) } }
 }
