@@ -1,4 +1,0 @@
-rootProject.name = 'lawrence-agent'
-include('javassist-agent','skywalking','byte-buddy-agent')
-include 'agent-test'
-
