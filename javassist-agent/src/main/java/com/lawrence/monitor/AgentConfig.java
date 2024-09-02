@@ -3,7 +3,7 @@ package com.lawrence.monitor;
 import lombok.Data;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * @author : Lawrence
@@ -14,7 +14,7 @@ public class AgentConfig {
     private JdbcConfig jdbcConfig;
     private ServletConfig servletConfig;
 
-   public static AgentConfig init(Properties properties) {
+    public static AgentConfig init(Properties properties) {
         AgentConfig agentConfig = new AgentConfig();
         JdbcConfig jdbcConfig = new JdbcConfig();
         ServletConfig servletConfig = new ServletConfig();
@@ -24,8 +24,8 @@ public class AgentConfig {
         boolean enable = Boolean.parseBoolean(properties.getOrDefault("jdbc.enable", Boolean.FALSE.toString()).toString());
         String scanPackages = properties.getOrDefault("jdbc.scan-packages", "").toString();
         jdbcConfig.setEnable(enable);
-        if (Objects.nonNull(scanPackages) && !scanPackages.trim().equals("")) {
-            List<String> packages = Arrays.stream(scanPackages.split(",")).collect(Collectors.toList());
+        if (Objects.nonNull(scanPackages) && !scanPackages.trim().isEmpty()) {
+            List<String> packages = Stream.of(scanPackages.split(",")).toList();
             jdbcConfig.setScanPackages(packages);
         }
 
@@ -35,8 +35,8 @@ public class AgentConfig {
         String servletScanPackages = properties.getOrDefault("servlet.scan-packages", "").toString();
         servletConfig.setEnable(servletEnable);
         servletConfig.setVersion(version);
-        if (Objects.nonNull(servletScanPackages) && !servletScanPackages.trim().equals("")) {
-            List<String> packages = Arrays.stream(scanPackages.split(",")).collect(Collectors.toList());
+        if (Objects.nonNull(servletScanPackages) && !servletScanPackages.trim().isEmpty()) {
+            List<String> packages = Stream.of(scanPackages.split(",")).toList();
             servletConfig.setScanPackages(packages);
         }
 

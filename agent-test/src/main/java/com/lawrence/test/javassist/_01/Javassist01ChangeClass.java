@@ -40,7 +40,7 @@ public class Javassist01ChangeClass {
 
         // 生成类文件：可指定路径，默认为当前项目根目录
         // 指定为当前项目build/generate-class目录
-        ctClass.writeFile("build/generate-class");
+        ctClass.writeFile("agent-test/build/generate-class");
 
         //新的字节码
         Class<?> newClz = ctClass.toClass();
