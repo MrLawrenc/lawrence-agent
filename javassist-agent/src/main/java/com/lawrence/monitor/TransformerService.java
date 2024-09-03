@@ -3,6 +3,7 @@ package com.lawrence.monitor;
 import com.lawrence.monitor.core.AbstractMonitor;
 import com.lawrence.monitor.core.MethodInfo;
 import com.lawrence.monitor.core.Monitor;
+import com.lawrence.monitor.core.impl.JakartaServletMonitor;
 import com.lawrence.monitor.core.impl.JdbcMonitor;
 import com.lawrence.monitor.core.impl.ServletMonitor;
 import com.lawrence.monitor.stack.StackNode;
@@ -65,12 +66,13 @@ public class TransformerService implements ClassFileTransformer {
 
 
     public TransformerService(AgentConfig agentConfig) {
-
+        JakartaServletMonitor a = new JakartaServletMonitor();
         monitorList.add(new JdbcMonitor());
         monitorList.add(new ServletMonitor());
+        monitorList.add(a);
 
         //初始化所有的单例对象 fix
-        monitorList.forEach(AbstractMonitor::init);
+        a.init();
     }
 
     @SneakyThrows
