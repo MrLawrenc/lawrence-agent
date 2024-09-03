@@ -1,6 +1,5 @@
 package com.lawrence.monitor.core.impl;
 
-import cn.hutool.json.JSONUtil;
 import com.lawrence.monitor.statistics.JdbcStatistics;
 import com.lawrence.monitor.statistics.Statistics;
 import com.lawrence.monitor.util.GlobalUtil;
@@ -123,7 +122,7 @@ public class JdbcMonitor extends AbstractMonitor {
                         } else if (result instanceof Boolean) {
                             statistics.setSuccess((Boolean) result);
                         }
-                        System.out.println("preparedStatement statistics:" + JSONUtil.toJsonStr(statistics));
+                        System.out.println("preparedStatement statistics:" + statistics);
                     }
                     return result;
                 });
@@ -173,7 +172,7 @@ public class JdbcMonitor extends AbstractMonitor {
             current.setNewResult(result);
         }
         current.setEndTime(System.currentTimeMillis());
-        System.out.println("statistics:" + JSONUtil.toJsonStr(current));
+        System.out.println("statistics:" + current);
         return result;
     }
 

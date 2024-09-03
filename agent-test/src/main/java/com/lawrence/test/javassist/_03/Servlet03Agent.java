@@ -3,6 +3,7 @@ package com.lawrence.test.javassist._03;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 //javax.servlet.http.HttpServlet
@@ -19,7 +20,9 @@ public class Servlet03Agent {
 
 
     @GetMapping("/hello")
-    public String hello() {
-        return "hello";
+    public String hello(
+            @RequestParam("param1") String param1
+    ) {
+        return "hello " + param1;
     }
 }
