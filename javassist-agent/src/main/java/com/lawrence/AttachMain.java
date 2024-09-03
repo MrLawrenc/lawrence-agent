@@ -5,6 +5,8 @@ import com.lawrence.monitor.AgentConfig;
 import com.lawrence.monitor.TransformerService;
 import javassist.*;
 import lombok.SneakyThrows;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -23,6 +25,9 @@ import java.util.*;
  * attach注入的入口
  */
 public class AttachMain {
+
+    private static Logger logger = LoggerFactory.getLogger(AttachMain.class);
+
     public static void premain(String agentOps, Instrumentation inst) {
         System.out.println("######################################################################");
         System.out.println("######################################################################");
@@ -30,6 +35,7 @@ public class AttachMain {
         System.out.println("######################################################################");
         System.out.println("######################################################################");
 
+        logger.info("Current Thread ClassLoader Name is:{}", Thread.currentThread().getContextClassLoader().getName());
         System.out.println("Agent Param: " + agentOps);
         Properties properties = new Properties();
 
