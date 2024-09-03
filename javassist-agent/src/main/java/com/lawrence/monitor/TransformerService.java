@@ -66,13 +66,12 @@ public class TransformerService implements ClassFileTransformer {
 
 
     public TransformerService(AgentConfig agentConfig) {
-        JakartaServletMonitor a = new JakartaServletMonitor();
         monitorList.add(new JdbcMonitor());
         monitorList.add(new ServletMonitor());
-        monitorList.add(a);
+        monitorList.add(new JakartaServletMonitor());
 
         //初始化所有的单例对象 fix
-        a.init();
+        monitorList.forEach(AbstractMonitor::init);
     }
 
     @SneakyThrows

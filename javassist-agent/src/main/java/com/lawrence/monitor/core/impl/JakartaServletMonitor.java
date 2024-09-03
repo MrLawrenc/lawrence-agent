@@ -1,6 +1,5 @@
 package com.lawrence.monitor.core.impl;
 
-import cn.hutool.json.JSONUtil;
 import com.lawrence.monitor.StatisticsType;
 import com.lawrence.monitor.core.AbstractMonitor;
 import com.lawrence.monitor.core.MethodInfo;
@@ -101,7 +100,7 @@ public class JakartaServletMonitor extends AbstractMonitor {
             String element = parameterNames.nextElement();
             urlParam.put(element, wrapperRequest.getParameter(element));
         }
-        statistics.setUrlData(JSONUtil.toJsonStr(urlParam));
+        statistics.setUrlData(urlParam.toString());
         return statistics;
     }
 
@@ -116,7 +115,7 @@ public class JakartaServletMonitor extends AbstractMonitor {
         ServletStatistics servletStatistics = (ServletStatistics) current;
         HttpServletResponse servletResponse = (HttpServletResponse) servletStatistics.getArgs()[1];
         servletStatistics.setRespStatus(servletResponse.getStatus());
-        log.info("monitor data:{}", JSONUtil.toJsonStr(servletStatistics));
+        log.info("monitor data:{}", servletStatistics);
         return obj;
     }
 

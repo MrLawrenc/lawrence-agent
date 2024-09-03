@@ -19,15 +19,11 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
 
     implementation("org.javassist:javassist:3.27.0-GA")
-
-    implementation("cn.hutool:hutool-all:4.6.5")
     implementation("org.slf4j:slf4j-simple:1.7.26")
+
     compileOnly("org.projectlombok:lombok:1.18.22")
     annotationProcessor("org.projectlombok:lombok:1.18.22")
-    implementation("junit:junit:4.12")
-
     compileOnly("javax.servlet:javax.servlet-api:3.0.1")
-
     compileOnly("jakarta.servlet:jakarta.servlet-api:5.0.0")
 }
 
