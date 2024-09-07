@@ -31,70 +31,63 @@ public class StackNode implements Writeable {
     /**
      * 若进入if逻辑，则代表该线程是线程池复用的线程
      */
-    public StackNode() {
+    private StackNode() {
         if (Objects.nonNull(ThreadLocalUtil.globalThreadLocal.get())) {
-            Collector.updateNodeTree();
-            log.info("parent node size:" + Collector.NODE_TREE_LIST.size());
-            //输出当前总链信息
-            Collector.NODE_TREE_LIST.forEach(Node::printNodeTreeByParent);
-
             String key = ThreadLocalUtil.globalThreadLocal.get().getId();
             //ALL_NODE.remove(key);
             log.info("thread({}) reuse,remove nodeChain({}).", Thread.currentThread().getName(), key);
         }
 
         this.id = GlobalUtil.getId();
-        // 0为当前方法 ； 1为实例化处，通常在monitor实现类 ； 2才是真的的调用处
-        Node parentNode = new Node(null, 1).createStackInfo(new Throwable().getStackTrace()[2]);
+        // 0为当前方法 ； 1为createParentNode实例化处，2通常在monitor实现类 ； 3才是真的的调用处
+        Node parentNode = new Node(null, 1L).createStackInfo(new Throwable().getStackTrace()[3]);
         Collector.addNode(id, parentNode);
         log.info("{} new flow start. add new parentNode {}", Thread.currentThread().getName(), parentNode);
 
     }
 
-    /**
-     * 会被注入字节码的类调用
-     *
-     * @param stackTraceElement 堆栈信息
-     */
-    @Deprecated
-    public void addNode(StackTraceElement[] stackTraceElement) {
-
+    public static StackNode createParentNode() {
+        return new StackNode();
     }
 
     /**
      * 会在被注入字节码的类中调用，用于统计堆栈信息
      */
-    public void addNode() {
-        String id = ThreadLocalUtil.globalThreadLocal.get().getId();
+    public static void addNode() {
+        StackNode stackNode = ThreadLocalUtil.globalThreadLocal.get();
+        String id = stackNode.getId();
         List<Node> currentNodeChain = Collector.getContainer(id).getNodeList();
-        long parentId = currentNodeChain.get(currentNodeChain.size() - 1).getId();
-        Node node = new Node(parentId, parentId * 10 + 1).createStackInfo(new Throwable().getStackTrace()[1]);
+        Node node = getCurrentNode(id);
         currentNodeChain.add(node);
+        log.info("result nodes:{}", currentNodeChain);
+    }
+
+    private static Node getCurrentNode(String id) {
+        List<Node> currentNodeChain = Collector.getContainer(id).getNodeList();
+
+        StackTraceElement stackTraceElement = new Throwable().getStackTrace()[3];
+        StackTraceElement currentStackTraceElement = new Throwable().getStackTrace()[2];
+        String key = stackTraceElement.getClassName() + stackTraceElement.getMethodName();
+        String currentKey = currentStackTraceElement.getClassName() + currentStackTraceElement.getMethodName();
+        Node pNode = currentNodeChain.stream().filter(node -> key.equals(node.getClassName() + node.getMethodName()))
+                .findFirst().orElse(null);
+        log.info("find p key:{}, current key:{}, pNode is null:{}", key, currentKey, pNode == null);
+        if (pNode == null) {
+            long parentId = currentNodeChain.get(currentNodeChain.size() - 1).getId();
+            return new Node(parentId, parentId * 10 + 1).createStackInfo(currentStackTraceElement);
+        }
+        Node lastNode = currentNodeChain.stream().filter(node -> Objects.equals(node.parentId, pNode.id))
+                .max((n1, n2) -> n1.getId() > n2.getId() ? 1 : -1).orElse(null);
+        Long currentNodeId;
+        if (lastNode == null) {
+            currentNodeId = pNode.id * 10 + 1;
+        } else {
+            currentNodeId = lastNode.getId() + 1;
+        }
+        return new Node(pNode.id, currentNodeId).createStackInfo(new Throwable().getStackTrace()[2]);
     }
 
 
-    /**
-     * 根据当前节点找到tree中匹配的顶层节点
-     *
-     * @param node 当前节点
-     * @return tree的顶层节点
-     */
-    private Node findParentNode(Node node) {
-        int idx = -1;
-        for (int i = 0; i < Collector.NODE_TREE_LIST.size(); i++) {
-            Node pNode = Collector.NODE_TREE_LIST.get(i);
-            if (pNode.className.equals(node.getClassName()) && pNode.methodName.equals(node.methodName)
-                    && pNode.getLineNum() == node.getLineNum()) {
-                idx = i;
-            }
-        }
-
-        if (idx == -1) {
-            Collector.NODE_TREE_LIST.add(node);
-            return node;
-        }
-        return Collector.NODE_TREE_LIST.get(idx);
-    }
 
     /**
      * 堆栈信息节点
@@ -110,10 +103,10 @@ public class StackNode implements Writeable {
         private String stackInfo;
 
         private Long parentId;
-        private long id;
+        private Long id;
         private List<Node> child;
 
-        public Node(Long parentId, long id) {
+        public Node(Long parentId, Long id) {
             this.parentId = parentId;
             this.id = id;
         }
@@ -147,7 +140,7 @@ public class StackNode implements Writeable {
 
 
         public static void main(String[] args) {
-            Node node = new Node(null, 1);
+            Node node = new Node(null, 1L);
             node.setStackInfo("我是root节点" + node.getId());
 
 

@@ -10,7 +10,10 @@ import com.lawrence.monitor.stack.StackNode;
 import com.lawrence.monitor.util.ThreadLocalUtil;
 import javassist.*;
 import lombok.SneakyThrows;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.lang.instrument.ClassFileTransformer;
 import java.security.ProtectionDomain;
 import java.util.*;
@@ -22,6 +25,7 @@ import java.util.stream.Stream;
  * date  2020/7/4 19:13
  */
 public class TransformerService implements ClassFileTransformer {
+    private static final Logger logger = LoggerFactory.getLogger(TransformerService.class);
     /**
      * 插桩复制之后的方法名后缀
      */
@@ -31,32 +35,35 @@ public class TransformerService implements ClassFileTransformer {
     /**
      * 需要统计堆栈数据的包
      */
-    private static final List<String> STACK_BASE_PKG = Arrays.asList("com.huize", "com.swust", "com.github.mrlarence");
+    private static final List<String> STACK_BASE_PKG = Arrays.asList("com.huize", "com.swust"
+            , "com.github.mrlarence", "com.mrlarence", "com.lawrence");
     /**
      * 统计堆栈数据时需要排除的包
      */
-    private static final List<String> STACK_EXCLUDE_PKG = Arrays.asList("java", "sun", "org");
+    private static final List<String> STACK_EXCLUDE_PKG = Arrays.asList("java", "sun", "javassist", "org", "com.lawrence.monitor");
     /**
      * 统计堆栈数据时需要排除的方法
      */
-    private static final List<String> STACK_EXCLUDE_METHOD = Arrays.asList("toString", "equals", "hashCode", "wait", "notify", "clone");
+    private static final List<String> STACK_EXCLUDE_METHOD = Arrays.asList("main", "toString", "equals", "hashCode", "wait", "notify", "clone");
     /**
      * 统计堆栈数据时 排除getter和setter方法
      */
     private static final List<String> STACK_EXCLUDE_GET_AND_SET = Arrays.asList("get", "set");
 
+    private static final String STACK_LOCAL_VARIABLE_SRC = "stackNode";
     private static final String STACK_SRC = "{\n" +
-            //"StackTraceElement stackTraceElement = Thread.currentThread().getStackTrace()[1];\n" +
-            // "StackTraceElement[] stackTraceElement = Thread.currentThread().getStackTrace();\n" +
-            // "StackTraceElement[] stackTraceElement = new Throwable().getStackTrace();\n" +
-            // StackNode.class.getName() + " stackNode = " + ThreadLocalUtil.class.getName() + ".globalThreadLocal.get();\n" +
-            // "if(java.util.Objects.nonNull(stackNode)){\n" +
-            //  "   stackTree.addNode(stackTraceElement);\n" +
-            //  "}\n" +
-            StackNode.class.getName() + " stackNode = " + ThreadLocalUtil.class.getName() + ".globalThreadLocal.get();\n" +
-            "if(java.util.Objects.nonNull(stackNode)){\n" +
-            "   stackNode.addNode();\n" +
-            "}\n" +
+//            "StackTraceElement stackTraceElement = Thread.currentThread().getStackTrace()[1];\n" +
+//             "StackTraceElement[] stackTraceElement = Thread.currentThread().getStackTrace();\n" +
+//             "StackTraceElement[] stackTraceElement = new Throwable().getStackTrace();\n" +
+//             StackNode.class.getName() + " stackNode = " + ThreadLocalUtil.class.getName() + ".globalThreadLocal.get();\n" +
+//             "if(java.util.Objects.nonNull(stackNode)){\n" +
+//              "   stackNode.addNode(stackTraceElement);\n" +
+//              "}\n" +
+            "stackNode = " + ThreadLocalUtil.class.getName() + ".globalThreadLocal.get();\n" +
+            "   if(java.util.Objects.nonNull(stackNode)){\n" +
+            "       System.out.println(stackNode.getClass());\n" +
+            StackNode.class.getName() + ".addNode();\n" +
+            "   }\n" +
             "}";
 
     /**
@@ -64,8 +71,10 @@ public class TransformerService implements ClassFileTransformer {
      */
     private final List<AbstractMonitor> monitorList = new ArrayList<>();
 
+    private final AgentConfig agentConfig;
 
     public TransformerService(AgentConfig agentConfig) {
+        this.agentConfig = agentConfig;
         monitorList.add(new JdbcMonitor());
         monitorList.add(new ServletMonitor());
         monitorList.add(new JakartaServletMonitor());
@@ -77,8 +86,8 @@ public class TransformerService implements ClassFileTransformer {
     @SneakyThrows
     @Override
     public byte[] transform(ClassLoader loader, String className, Class<?> classBeingRedefined, ProtectionDomain protectionDomain, byte[] data) {
-        if (Objects.isNull(className) || className.replaceAll("/", ".").equals(StackNode.class.getName())) {
-            return new byte[0];
+        if (className.replaceAll("/", ".").equals(StackNode.class.getName())) {
+            return data;
         }
         ClassPool pool = new ClassPool(true);
         pool.insertClassPath(new LoaderClassPath(loader));
@@ -88,29 +97,23 @@ public class TransformerService implements ClassFileTransformer {
 
         int modifiers = targetClz.getModifiers();
         if (Modifier.isNative(modifiers) || Modifier.isEnum(modifiers) || Modifier.isInterface(modifiers)) {
-            return new byte[0];
+            //skip
+            return data;
         }
 
-        boolean flag = false;
-        Monitor monitor = null;
-        for (Monitor currentMonitor : monitorList) {
-            if (currentMonitor.isTarget(className)) {
-                monitor = currentMonitor;
-                flag = true;
-                break;
-            }
-        }
+        Monitor monitor = monitorList.stream().filter(m -> m.isTarget(className)).findAny().orElse(null);
         String clzName = className.replaceAll("/", ".");
         try {
-            if (flag) {
+            if (Objects.nonNull(monitor)) {
+                logger.info("!!!!!monitor class[{}] for class[{}]", monitor.getClass().getName(), clzName);
                 CtMethod method = monitor.targetMethod(pool, targetClz);
                 if (Objects.nonNull(method)) {
-                    System.out.println("target {}#{}  use monitor:{}" + clzName + method.getName() + monitor.getClass().getName());
+                    logger.info("target {}#{}  use monitor:{}", clzName, method.getName(), monitor.getClass().getName());
                     String newMethodName = method.getName() + AGENT_SUFFIX;
-                    System.out.println("start copy new method : {}" + newMethodName);
+                    logger.info("start copy new method : {}", newMethodName);
                     CtMethod newMethod = CtNewMethod.copy(method, newMethodName, targetClz, null);
                     targetClz.addMethod(newMethod);
-
+                    logger.info("end copy new method : {}", newMethodName);
                     CtClass throwable = pool.get(Throwable.class.getName());
 
                     MethodInfo methodInfo = monitor.getMethodInfo(newMethodName);
@@ -121,13 +124,15 @@ public class TransformerService implements ClassFileTransformer {
                         method.addCatch(methodInfo.getCatchBody(), throwable);
                         method.insertAfter(methodInfo.getFinallyBody(), true);
                     }
-                    System.out.println("copy method{} end" + method.getName());
+                    logger.info("copy method{} end", method.getName());
+                    targetClz.writeFile("class");
+                    logger.info(new File("class").getAbsolutePath());
                     return targetClz.toBytecode();
                 }
             } else {
                 for (String excludePkg : STACK_EXCLUDE_PKG) {
-                    if (className.startsWith(excludePkg)) {
-                        return new byte[0];
+                    if (clzName.startsWith(excludePkg)) {
+                        return data;
                     }
                 }
 
@@ -139,9 +144,9 @@ public class TransformerService implements ClassFileTransformer {
                     }
                 }
                 if (!isStackClz) {
-                    return new byte[0];
+                    return data;
                 }
-
+                logger.info("!!!!!stack for class[{}]", targetClz.getClass().getName());
                 //以下是符合堆栈统计的class，插入堆栈统计代码
                 CtMethod[] methods = targetClz.getDeclaredMethods();
                 List<String> fieldNameList = Stream.of(targetClz.getDeclaredFields())
@@ -165,7 +170,12 @@ public class TransformerService implements ClassFileTransformer {
 
                     //插入堆栈统计代码
                     System.out.println("insert stack node : " + className + "#" + methodName);
+                    //插入局部变量,不能直接写long startTime = System.currentTimeMillis(),会报错,
+                    //要更改为先定义变量startTime，再插入startTime = System.currentTimeMillis()
+                    CtClass stackNode = pool.get(StackNode.class.getName());
+                    method.addLocalVariable(STACK_LOCAL_VARIABLE_SRC, stackNode);
                     method.insertBefore(STACK_SRC);
+                    logger.info("insert source:{}", STACK_SRC);
 
                     //也可以使用如下方法插入堆栈
 /*                    method.addLocalVariable("stackTree",pool.get(StackNode.class.getName()));
@@ -180,12 +190,14 @@ public class TransformerService implements ClassFileTransformer {
                             "}";
                     method.insertBefore(src);*/
                 }
+                targetClz.writeFile("class");
+                logger.info(new File("class").getAbsolutePath());
                 return targetClz.toBytecode();
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            logger.error("transformer error", e);
         }
 
-        return new byte[0];
+        return data;
     }
 }

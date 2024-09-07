@@ -1,7 +1,3 @@
-import java.text.DateFormat
-import java.text.SimpleDateFormat
-import java.time.LocalDateTime
-import java.util.Date
 
 plugins {
     id("java")
