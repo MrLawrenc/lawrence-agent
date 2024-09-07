@@ -65,7 +65,7 @@ public class ServletMonitor extends AbstractMonitor {
 
     @Override
     public Statistics begin(Object obj, Object... args) {
-        ThreadLocalUtil.globalThreadLocal.set(new StackNode());
+        ThreadLocalUtil.globalThreadLocal.set(StackNode.createParentNode());
 
         ServletStatistics statistics = GlobalUtil.createStatistics(ServletStatistics.class);
         HttpServletRequest servletRequest = (HttpServletRequest) args[0];

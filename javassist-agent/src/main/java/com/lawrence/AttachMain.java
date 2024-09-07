@@ -1,6 +1,5 @@
 package com.lawrence;
 
-import com.lawrence.helper.Log;
 import com.lawrence.monitor.AgentConfig;
 import com.lawrence.monitor.TransformerService;
 import javassist.*;
@@ -26,27 +25,20 @@ import java.util.*;
  */
 public class AttachMain {
 
-    private static Logger logger = LoggerFactory.getLogger(AttachMain.class);
+    private static final Logger logger = LoggerFactory.getLogger(AttachMain.class);
 
     public static void premain(String agentOps, Instrumentation inst) {
-        System.out.println("######################################################################");
-        System.out.println("######################################################################");
-        System.out.println("#######                     Agent  Success                     #######");
-        System.out.println("######################################################################");
-        System.out.println("######################################################################");
-
-        logger.info("Current Thread ClassLoader Name is:{}", Thread.currentThread().getContextClassLoader().getName());
-        System.out.println("Agent Param: " + agentOps);
+        logger.info("#######Agent  Success#######");
+        logger.info("Agent Param: {}", agentOps);
         Properties properties = new Properties();
-
         try (FileInputStream is = new FileInputStream(agentOps)) {
             properties.load(is);
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            throw new RuntimeException("config file load fail.", e);
         }
-
         AgentConfig agentConfig = AgentConfig.init(properties);
-        Log.info("config is: {}", agentConfig.toString());
+        logger.info("config is: {}", agentConfig);
+
         inst.addTransformer(new TransformerService(agentConfig), true);
     }
 
@@ -55,10 +47,10 @@ public class AttachMain {
      * @param inst
      */
     public static void agentmain(String agentArgs, Instrumentation inst) throws UnmodifiableClassException {
-        inst.retransformClasses((Class<?>[]) p(agentArgs, inst).toArray());
+        inst.retransformClasses((Class<?>[]) addTransformer(agentArgs, inst).toArray());
     }
 
-    public static List<Class<?>> p(String agentArgs, Instrumentation inst) {
+    public static List<Class<?>> addTransformer(String agentArgs, Instrumentation inst) {
         System.out.println("######################################################################");
         System.out.println("######################################################################");
         System.out.println("#######                     Attach Success                     #######");

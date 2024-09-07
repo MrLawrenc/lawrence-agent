@@ -16,13 +16,9 @@ import java.util.*;
  */
 @Slf4j
 public class Collector {
-    /**
-     * 所有构建成功的node，每一个node都为一棵树
-     */
-    public static final List<StackNode.Node> NODE_TREE_LIST = new ArrayList<>();
 
     /**
-     * 每一次执行流程会生成一个唯一id，改唯一id对应一系列统计{@link Statistics}信息和一条堆栈{@link StackNode}信息
+     * 每一次执行流程会生成一个唯一id，该唯一id对应一系列统计{@link Statistics}信息和一条堆栈{@link StackNode}信息
      */
     private static final Map<String, ResultContainer> RESULT = new HashMap<>();
 
@@ -32,10 +28,30 @@ public class Collector {
         new Timer("node-tree-update").schedule(new TimerTask() {
             @Override
             public void run() {
-                Collector.updateNodeTree();
-                Collector.NODE_TREE_LIST.forEach(StackNode.Node::printNodeTreeByParent);
+                Collector.RESULT.forEach((outerKey, outerValue) -> {
+                    StackNode.Node head = buildStack(outerValue.getNodeList());
+                    print(head);
+                });
             }
-        }, 0, 1000 * 60);
+        }, 0, 100 * 60);
+    }
+
+    public static void print(StackNode.Node root) {
+        printHelper(root, "\t");
+    }
+
+    private static void printHelper(StackNode.Node root, String start) {
+        if (root == null) {
+            return;
+        }
+        String mid = start.substring(0, start.lastIndexOf("\t")) + "└---";
+        System.out.println(mid + root.getId() + "[" + root.getParentId() + "] " + root.getClassName() + ":" + root.getMethodName());
+        if (root.getChild() == null) {
+            return;
+        }
+        for (StackNode.Node node : root.getChild()) {
+            printHelper(node, start + "\t");
+        }
     }
 
     public static void addStatistics(Statistics statistics) {
@@ -61,67 +77,31 @@ public class Collector {
         return resultContainer;
     }
 
-    /**
-     * 更新 总链 树
-     */
-    public static void updateNodeTree() {
-        RESULT.values().forEach(c -> {
-            List<StackNode.Node> nodeList = c.getNodeList();
-            if (nodeList.size() > 0) {
-                buildStack(nodeList);
-            }
-
-        });
-    }
 
     /**
      * 将当前堆栈链，追加到总链上
      *
      * @param currentChain 某一条堆堆栈执行链
      */
-    private static void buildStack(List<StackNode.Node> currentChain) {
-        log.info("start build stack tree,parent size:{} current size:{}", NODE_TREE_LIST.size(), currentChain.size());
-
-        StackNode.Node head = currentChain.get(0);
-        boolean contain = false;
-        for (StackNode.Node node : NODE_TREE_LIST) {
-            if (node.getClassName().equals(head.getClassName()) && node.getMethodName().equals(head.getMethodName()) &&
-                    node.getLineNum() == head.getLineNum()) {
-                contain = true;
-                head = node;
-                break;
-            }
-        }
-        if (!contain) {
-            NODE_TREE_LIST.add(head);
-        }
-        log.info("parent node : {}", head);
-        StackNode.Node currentParent = head;
-        for (int i = 1; i < currentChain.size(); i++) {
-            buildStack0(currentParent, currentChain.get(i), currentParent.getChild());
-            currentParent = currentChain.get(i);
-        }
-        //head.printNodeTreeByParent();
+    private static StackNode.Node buildStack(List<StackNode.Node> currentChain) {
+        log.info("start build stack tree,parent size:{} current size:{}", RESULT.size(), currentChain.size());
+        log.info("start build stack tree,currentChain:{}", currentChain);
+        StackNode.Node currentParent = currentChain.stream().filter(node -> node.getParentId() == null).findFirst().orElse(null);
+        buildStack0(currentParent, currentChain);
+        log.info("parent node end : {}", currentParent);
+        return currentParent;
     }
 
-    private static void buildStack0(StackNode.Node parent, StackNode.Node current, List<StackNode.Node> alreadyExists) {
-        if (Objects.nonNull(alreadyExists)) {
-            for (StackNode.Node alreadyExistsNode : alreadyExists) {
-                //若当前插入的节点已存在，则忽略
-                if (alreadyExistsNode.getClassName().equals(current.getClassName())
-                        && alreadyExistsNode.getMethodName().equals(current.getMethodName())
-                        && alreadyExistsNode.getLineNum() == current.getLineNum()) {
-                    return;
-                }
-            }
+    private static void buildStack0(StackNode.Node currentParent, List<StackNode.Node> currentChain) {
+        if (Objects.isNull(currentChain)) {
+            return;
         }
-
-        List<StackNode.Node> child = parent.getChild();
-        if (child == null) {
-            child = new ArrayList<>();
-            parent.setChild(child);
+        List<StackNode.Node> child = currentChain.stream().filter(node -> Objects.equals(node.getParentId(), currentParent.getId())).toList();
+        currentParent.setChild(child);
+        log.info("parent node : {}", currentParent);
+        if (Objects.nonNull(child)) {
+            child.forEach(node -> buildStack0(node, currentChain));
         }
-        child.add(current);
     }
 
     @Data

@@ -8,13 +8,14 @@ import org.springframework.web.bind.annotation.RestController;
 
 //javax.servlet.http.HttpServlet
 //jakarta.servlet.http.HttpServlet
-//-javaagent:H:\Projects\JavaProject\agent\javassist-agent\build\libs\javassist-agent-1.0-SNAPSHOT_.AttachMain-202409032049_50.jar=H:\Projects\JavaProject\agent\agent-test\src\main\resources\03\agent.properties
+//-javaagent:H:\Projects\Agent-Codes\agent\javassist-agent\build\libs\javassist-agent-1.0-SNAPSHOT_.AttachMain-BETA.jar=H:\Projects\Agent-Codes\agent\agent-test\src\main\resources\03\agent.properties
 @SpringBootApplication
 @RestController()
 public class Servlet03Agent {
 
 
     public static void main(String[] args) {
+        System.out.println(OtherClassA.class);
         SpringApplication.run(Servlet03Agent.class, args);
     }
 
@@ -23,6 +24,8 @@ public class Servlet03Agent {
     public String hello(
             @RequestParam("param1") String param1
     ) {
+        new OtherClassA().a();
+        new OtherClassB().b();
         return "hello " + param1;
     }
 }
