@@ -2,13 +2,14 @@ package com.lawrence;
 
 import com.lawrence.monitor.AgentConfig;
 import com.lawrence.monitor.TransformerService;
+import com.lawrence.monitor.util.JsonUtils;
+import com.lawrence.utils.log.Logger;
+import com.lawrence.utils.log.LoggerFactory;
 import javassist.*;
 import lombok.SneakyThrows;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.IllegalClassFormatException;
 import java.lang.instrument.Instrumentation;
@@ -25,20 +26,26 @@ import java.util.*;
  */
 public class AttachMain {
 
-    private static final Logger logger = LoggerFactory.getLogger(AttachMain.class);
+    private static Logger LOGGER = null;
 
     public static void premain(String agentOps, Instrumentation inst) {
-        logger.info("#######Agent  Success#######");
-        logger.info("Agent Param: {}", agentOps);
+        System.out.println("#######Agent  Success#######");
+        System.out.println("Agent Param: " + agentOps);
+
         Properties properties = new Properties();
-        try (FileInputStream is = new FileInputStream(agentOps)) {
+        try (InputStream is = AttachMain.class.getClassLoader().getResourceAsStream(agentOps)) {
+            if (is == null) {
+                throw new RuntimeException("agent config file not found: " + agentOps);
+            }
             properties.load(is);
         } catch (IOException e) {
-            throw new RuntimeException("config file load fail.", e);
+            throw new RuntimeException("agent config file not found: " + agentOps, e);
         }
         AgentConfig agentConfig = AgentConfig.init(properties);
-        logger.info("config is: {}", agentConfig);
+        LoggerFactory.init(agentConfig.getLogLevel());
 
+        LOGGER = LoggerFactory.getLog(AttachMain.class);
+        LOGGER.debug("init agent config: {}", JsonUtils.toJson(agentConfig));
         inst.addTransformer(new TransformerService(agentConfig), true);
     }
 

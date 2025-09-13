@@ -7,10 +7,6 @@ plugins {
 group = "org.lawrence"
 version = "1.0-SNAPSHOT"
 
-//compileJava.options.encoding("UTF-8")
-//sourceCompatibility = JavaVersion.VERSION_17
-//targetCompatibility = JavaVersion.VERSION_17
-
 repositories {
     mavenLocal()
     mavenCentral()

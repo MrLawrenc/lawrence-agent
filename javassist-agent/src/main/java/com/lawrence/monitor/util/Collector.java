@@ -7,6 +7,7 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * @author hz20035009-逍遥
@@ -96,7 +97,7 @@ public class Collector {
         if (Objects.isNull(currentChain)) {
             return;
         }
-        List<StackNode.Node> child = currentChain.stream().filter(node -> Objects.equals(node.getParentId(), currentParent.getId())).toList();
+        List<StackNode.Node> child = currentChain.stream().filter(node -> Objects.equals(node.getParentId(), currentParent.getId())).collect(Collectors.toList());
         currentParent.setChild(child);
         log.info("parent node : {}", currentParent);
         if (Objects.nonNull(child)) {

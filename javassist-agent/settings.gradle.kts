@@ -13,8 +13,11 @@ dependencyResolutionManagement {
 
 pluginManagement {
     repositories {
-        maven { setUrl("https://maven.aliyun.com/repository/public") }
+        gradlePluginPortal() // ✅ 官方插件仓库，Shadow 插件就在这里
+        maven("https://maven.aliyun.com/repository/public")
+        mavenCentral()
     }
 }
+
 
 

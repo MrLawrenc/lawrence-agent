@@ -1,8 +1,11 @@
 package com.lawrence.monitor;
 
+import com.lawrence.utils.log.LoggerFactory;
 import lombok.Data;
 
 import java.util.*;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -13,6 +16,8 @@ import java.util.stream.Stream;
 public class AgentConfig {
     private JdbcConfig jdbcConfig;
     private ServletConfig servletConfig;
+
+    private Level logLevel;
 
     public static AgentConfig init(Properties properties) {
         AgentConfig agentConfig = new AgentConfig();
@@ -25,7 +30,7 @@ public class AgentConfig {
         String scanPackages = properties.getOrDefault("jdbc.scan-packages", "").toString();
         jdbcConfig.setEnable(enable);
         if (Objects.nonNull(scanPackages) && !scanPackages.trim().isEmpty()) {
-            List<String> packages = Stream.of(scanPackages.split(",")).toList();
+            List<String> packages = Stream.of(scanPackages.split(",")).collect(Collectors.toList());
             jdbcConfig.setScanPackages(packages);
         }
 
@@ -36,10 +41,12 @@ public class AgentConfig {
         servletConfig.setEnable(servletEnable);
         servletConfig.setVersion(version);
         if (Objects.nonNull(servletScanPackages) && !servletScanPackages.trim().isEmpty()) {
-            List<String> packages = Stream.of(scanPackages.split(",")).toList();
+            List<String> packages = Stream.of(scanPackages.split(",")).collect(Collectors.toList());
             servletConfig.setScanPackages(packages);
         }
 
+        String level = properties.getProperty("log.level", "info");
+        agentConfig.setLogLevel(LoggerFactory.parseLevel(level));
         return agentConfig;
     }
 
