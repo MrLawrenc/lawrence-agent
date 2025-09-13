@@ -5,7 +5,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.ConsoleHandler;
 import java.util.logging.Level;
-import java.util.logging.SimpleFormatter;
 
 /**
  * 日志工厂，生成 SimpleLog
@@ -40,7 +39,7 @@ public class LoggerFactory {
         }
     }
 
-    public static Logger getLog(Class<?> clazz) {
+    public static Logger getLogger(Class<?> clazz) {
         return CACHE.computeIfAbsent(clazz.getName(), n -> new SimpleLog(java.util.logging.Logger.getLogger(n)));
     }
 

@@ -8,10 +8,10 @@ import com.lawrence.monitor.core.impl.JdbcMonitor;
 import com.lawrence.monitor.core.impl.ServletMonitor;
 import com.lawrence.monitor.stack.StackNode;
 import com.lawrence.monitor.util.ThreadLocalUtil;
+import com.lawrence.utils.log.Logger;
+import com.lawrence.utils.log.LoggerFactory;
 import javassist.*;
 import lombok.SneakyThrows;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.lang.instrument.ClassFileTransformer;
@@ -75,12 +75,12 @@ public class TransformerService implements ClassFileTransformer {
 
     public TransformerService(AgentConfig agentConfig) {
         this.agentConfig = agentConfig;
-        monitorList.add(new JdbcMonitor());
-        monitorList.add(new ServletMonitor());
-        monitorList.add(new JakartaServletMonitor());
-
-        //初始化所有的单例对象 fix
-        monitorList.forEach(AbstractMonitor::init);
+        ServiceLoader<AbstractMonitor> loader = ServiceLoader.load(AbstractMonitor.class);
+        for (AbstractMonitor monitor : loader) {
+            logger.info("load monitor:{}", monitor.getClass().getName());
+            monitor.init(this.agentConfig);
+            monitorList.add(monitor);
+        }
     }
 
     @SneakyThrows
@@ -113,7 +113,6 @@ public class TransformerService implements ClassFileTransformer {
                     logger.info("start copy new method : {}", newMethodName);
                     CtMethod newMethod = CtNewMethod.copy(method, newMethodName, targetClz, null);
                     targetClz.addMethod(newMethod);
-                    logger.info("end copy new method : {}", newMethodName);
                     CtClass throwable = pool.get(Throwable.class.getName());
 
                     MethodInfo methodInfo = monitor.getMethodInfo(newMethodName);

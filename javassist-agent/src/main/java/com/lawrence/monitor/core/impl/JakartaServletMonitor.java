@@ -1,15 +1,19 @@
 package com.lawrence.monitor.core.impl;
 
+import com.lawrence.monitor.AgentConfig;
 import com.lawrence.monitor.StatisticsType;
 import com.lawrence.monitor.core.AbstractMonitor;
 import com.lawrence.monitor.core.MethodInfo;
 import com.lawrence.monitor.stack.StackNode;
 import com.lawrence.monitor.statistics.ServletStatistics;
 import com.lawrence.monitor.statistics.Statistics;
-import com.lawrence.monitor.util.GlobalUtil;
+import com.lawrence.monitor.util.Collector;
+import com.lawrence.monitor.util.StatisticsHelper;
 import com.lawrence.monitor.util.ThreadLocalUtil;
 import com.lawrence.monitor.write.Writeable;
 import com.lawrence.monitor.write.WriterResp;
+import com.lawrence.utils.log.Logger;
+import com.lawrence.utils.log.LoggerFactory;
 import jakarta.servlet.ReadListener;
 import javassist.ClassPool;
 import javassist.CtClass;
@@ -27,16 +31,19 @@ import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Map;
 
+import static com.lawrence.monitor.util.Collector.buildStack;
+import static com.lawrence.monitor.util.Collector.print;
+
 /**
  * adapt servlet 5.0(tomcat 10)
  */
-@Slf4j
 public class JakartaServletMonitor extends AbstractMonitor {
+    private static final Logger logger = LoggerFactory.getLogger(JakartaServletMonitor.class);
     private static final String TARGET_CLZ = "jakarta.servlet.http.HttpServlet";
     public static JakartaServletMonitor INSTANCE;
 
     @Override
-    public void init() {
+    public void init(AgentConfig agentConfig) {
         JakartaServletMonitor.INSTANCE = this;
     }
 
@@ -67,7 +74,7 @@ public class JakartaServletMonitor extends AbstractMonitor {
     public Statistics begin(Object obj, Object... args) {
         ThreadLocalUtil.globalThreadLocal.set(StackNode.createParentNode());
 
-        ServletStatistics statistics = GlobalUtil.createStatistics(ServletStatistics.class);
+        ServletStatistics statistics = StatisticsHelper.createStatistics(ServletStatistics.class);
         HttpServletRequest servletRequest = (HttpServletRequest) args[0];
         StringBuffer url = servletRequest.getRequestURL();
         statistics.setUrl(url.toString());
@@ -91,7 +98,7 @@ public class JakartaServletMonitor extends AbstractMonitor {
             }
             statistics.setBodyData(sb.toString());
         } catch (IOException e) {
-            log.error("read body data error", e);
+            logger.error("read body data error", e);
         }
         //url参数
         Enumeration<String> parameterNames = wrapperRequest.getParameterNames();
@@ -115,7 +122,11 @@ public class JakartaServletMonitor extends AbstractMonitor {
         ServletStatistics servletStatistics = (ServletStatistics) current;
         HttpServletResponse servletResponse = (HttpServletResponse) servletStatistics.getArgs()[1];
         servletStatistics.setRespStatus(servletResponse.getStatus());
-        log.info("monitor data:{}", servletStatistics);
+        logger.info("monitor data:{}", servletStatistics);
+        Collector.RESULT.forEach((outerKey, outerValue) -> {
+            StackNode.Node head = buildStack(outerValue.getNodeList());
+            print(head);
+        });
         return obj;
     }
 
@@ -147,7 +158,7 @@ public class JakartaServletMonitor extends AbstractMonitor {
                     start += data.length;
                 }
             } catch (IOException e) {
-                log.error("copy wrapper request fail!", e);
+                logger.error("copy wrapper request fail!", e);
             }
 
         }

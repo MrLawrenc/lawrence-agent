@@ -11,4 +11,6 @@ public interface Logger {
     void warn(String msg, Object... args);
 
     void error(String msg, Object... args);
+
+    void error(String msg, Throwable t, Object... args);
 }
