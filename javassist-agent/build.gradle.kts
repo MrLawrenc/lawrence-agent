@@ -1,10 +1,11 @@
-
 plugins {
     id("java")
+    id("com.github.johnrengelman.shadow") version "8.1.1"
 }
 
 group = "org.lawrence"
 version = "1.0-SNAPSHOT"
+
 
 repositories {
     mavenCentral()
@@ -16,6 +17,8 @@ dependencies {
 
     implementation("org.javassist:javassist:3.27.0-GA")
     implementation("org.slf4j:slf4j-simple:1.7.26")
+    implementation("com.eclipsesource.minimal-json:minimal-json:0.9.5")
+    implementation("net.bytebuddy:byte-buddy:1.14.2")
 
     compileOnly("org.projectlombok:lombok:1.18.22")
     annotationProcessor("org.projectlombok:lombok:1.18.22")
@@ -27,23 +30,20 @@ tasks.test {
     useJUnitPlatform()
 }
 
-tasks.jar {
+tasks.withType<Jar> {
     manifest {
-        val mainClass = "com.lawrence.AttachMain"
-        val suffix = mainClass.substring(mainClass.lastIndexOf("."))
-        //定义包名
-        val archivesBaseName = "${project.name}"
-        archiveVersion = "${archiveVersion.getOrNull()}_${suffix}"
-        archiveClassifier = "BETA"
-        attributes["Manifest-Version"] = 1.0
-        attributes["Can-Redefine-Classes"] = true
-        attributes["Can-Retransform-Classes"] = true
-        attributes["Premain-Class"] = mainClass
+        attributes(
+            "Manifest-Version" to "1.0",
+            "Premain-Class" to "com.lawrence.AttachMain",
+            "Main-Class" to "com.lawrence.AttachMain",
+            "Can-Redefine-Classes" to "true",
+            "Can-Retransform-Classes" to "true"
+        )
     }
-    from(configurations.runtimeClasspath.get().map {
-        if (it.isDirectory) it else zipTree(it)
-    })
-    val sourcesMain = sourceSets.main.get()
-    sourcesMain.allSource.forEach { println("add from sources: ${it.name}") }
-    from(sourcesMain.output)
+}
+
+// shadowJar 是 shadow 插件提供的任务
+tasks.shadowJar {
+    archiveClassifier.set("") // 不带 -all 后缀，生成单一可执行 jar
+    mergeServiceFiles()       // 合并 META-INF/services 避免冲突
 }
