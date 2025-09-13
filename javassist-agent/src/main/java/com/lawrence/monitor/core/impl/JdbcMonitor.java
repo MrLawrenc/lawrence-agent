@@ -1,13 +1,16 @@
 package com.lawrence.monitor.core.impl;
 
+import com.lawrence.monitor.AgentConfig;
 import com.lawrence.monitor.statistics.JdbcStatistics;
 import com.lawrence.monitor.statistics.Statistics;
-import com.lawrence.monitor.util.GlobalUtil;
+import com.lawrence.monitor.util.StatisticsHelper;
 import com.lawrence.monitor.write.Writeable;
 import com.lawrence.monitor.write.WriterResp;
 import com.lawrence.monitor.StatisticsType;
 import com.lawrence.monitor.core.AbstractMonitor;
 import com.lawrence.monitor.core.MethodInfo;
+import com.lawrence.utils.log.Logger;
+import com.lawrence.utils.log.LoggerFactory;
 import javassist.ClassPool;
 import javassist.CtClass;
 import javassist.CtMethod;
@@ -29,6 +32,9 @@ import java.util.Objects;
  * JDBC监控器实现
  */
 public class JdbcMonitor extends AbstractMonitor {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(JdbcMonitor.class);
+
     private static final String TARGET_CLZ = "com.mysql.cj.jdbc.NonRegisteringDriver";
     public static AbstractMonitor INSTANCE;
     /**
@@ -57,7 +63,7 @@ public class JdbcMonitor extends AbstractMonitor {
             "System.out.println(\"finally end:\");}";
 
     @Override
-    public void init() {
+    public void init(AgentConfig agentConfig) {
         JdbcMonitor.INSTANCE = this;
     }
 
@@ -78,7 +84,7 @@ public class JdbcMonitor extends AbstractMonitor {
             public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
                 JdbcStatistics statistics = null;
                 if (Arrays.asList(PROXY_CONNECTION_METHOD).contains(method.getName())) {
-                    statistics = GlobalUtil.createStatistics(JdbcStatistics.class);
+                    statistics = StatisticsHelper.createStatistics(JdbcStatistics.class);
                     statistics.setStartTime(System.currentTimeMillis());
                 }
 
@@ -106,7 +112,6 @@ public class JdbcMonitor extends AbstractMonitor {
                 , new Class[]{PreparedStatement.class}, (proxy, method, args) -> {
                     Object result = method.invoke(statement, args);
                     if (Arrays.asList(STATEMENT_METHOD).contains(method.getName())) {
-                        System.out.println("method name:" + method.getName());
                         statistics.setEndTime(System.currentTimeMillis());
                         if (result instanceof ResultSet) {
                             ResultSet resultSet = (ResultSet) result;
@@ -122,7 +127,6 @@ public class JdbcMonitor extends AbstractMonitor {
                         } else if (result instanceof Boolean) {
                             statistics.setSuccess((Boolean) result);
                         }
-                        System.out.println("preparedStatement statistics:" + statistics);
                     }
                     return result;
                 });
@@ -152,8 +156,8 @@ public class JdbcMonitor extends AbstractMonitor {
 
     @Override
     public Statistics begin(Object obj, Object... args) {
-        Statistics statistics = GlobalUtil.createStatistics(JdbcStatistics.class);
-        System.out.println("begin class:{} args:{}" + obj.getClass() + args);
+        Statistics statistics = StatisticsHelper.createStatistics(JdbcStatistics.class);
+        LOGGER.debug("begin class:{} args:{}", obj.getClass(), args);
         statistics.setStartTime(System.currentTimeMillis());
         return statistics;
     }
@@ -172,7 +176,6 @@ public class JdbcMonitor extends AbstractMonitor {
             current.setNewResult(result);
         }
         current.setEndTime(System.currentTimeMillis());
-        System.out.println("statistics:" + current);
         return result;
     }
 

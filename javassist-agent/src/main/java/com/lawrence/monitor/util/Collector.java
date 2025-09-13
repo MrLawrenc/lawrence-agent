@@ -10,7 +10,6 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * @author hz20035009-逍遥
  * date   2020/7/15 14:16
  * <p>
  * agent收集器
@@ -21,21 +20,7 @@ public class Collector {
     /**
      * 每一次执行流程会生成一个唯一id，该唯一id对应一系列统计{@link Statistics}信息和一条堆栈{@link StackNode}信息
      */
-    private static final Map<String, ResultContainer> RESULT = new HashMap<>();
-
-
-    static {
-        //启动定时任务不断刷新 node tree
-        new Timer("node-tree-update").schedule(new TimerTask() {
-            @Override
-            public void run() {
-                Collector.RESULT.forEach((outerKey, outerValue) -> {
-                    StackNode.Node head = buildStack(outerValue.getNodeList());
-                    print(head);
-                });
-            }
-        }, 0, 100 * 60);
-    }
+    public static final Map<String, ResultContainer> RESULT = new HashMap<>();
 
     public static void print(StackNode.Node root) {
         printHelper(root, "\t");
@@ -46,7 +31,7 @@ public class Collector {
             return;
         }
         String mid = start.substring(0, start.lastIndexOf("\t")) + "└---";
-        System.out.println(mid + root.getId() + "[" + root.getParentId() + "] " + root.getClassName() + ":" + root.getMethodName());
+        System.out.println(mid + root.getId() + "[" + root.getParentId() + "] " + root.getClassName() + ":" + root.getMethodName() + ", lines: " + root.getLineNum());
         if (root.getChild() == null) {
             return;
         }
@@ -84,12 +69,10 @@ public class Collector {
      *
      * @param currentChain 某一条堆堆栈执行链
      */
-    private static StackNode.Node buildStack(List<StackNode.Node> currentChain) {
+    public static StackNode.Node buildStack(List<StackNode.Node> currentChain) {
         log.info("start build stack tree,parent size:{} current size:{}", RESULT.size(), currentChain.size());
-        log.info("start build stack tree,currentChain:{}", currentChain);
         StackNode.Node currentParent = currentChain.stream().filter(node -> node.getParentId() == null).findFirst().orElse(null);
         buildStack0(currentParent, currentChain);
-        log.info("parent node end : {}", currentParent);
         return currentParent;
     }
 
@@ -99,7 +82,6 @@ public class Collector {
         }
         List<StackNode.Node> child = currentChain.stream().filter(node -> Objects.equals(node.getParentId(), currentParent.getId())).collect(Collectors.toList());
         currentParent.setChild(child);
-        log.info("parent node : {}", currentParent);
         if (Objects.nonNull(child)) {
             child.forEach(node -> buildStack0(node, currentChain));
         }

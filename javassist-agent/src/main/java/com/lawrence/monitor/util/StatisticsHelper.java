@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author : MrLawrenc
  * date  2020/7/11 17:49
  */
-public class GlobalUtil {
+public class StatisticsHelper {
     public static final String TABS = "\t";
     public static final String EMPTY_STR = "";
     private static final Writer WRITER;
@@ -56,7 +56,7 @@ public class GlobalUtil {
             Constructor<T> constructor = statisticsClass.getDeclaredConstructor(String.class);
             constructor.setAccessible(true);
             if (Objects.isNull(ThreadLocalUtil.globalThreadLocal.get())) {
-                statistics = constructor.newInstance(GlobalUtil.getId());
+                statistics = constructor.newInstance(StatisticsHelper.getId());
             } else {
                 statistics = constructor.newInstance(ThreadLocalUtil.globalThreadLocal.get().getId());
             }

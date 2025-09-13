@@ -1,6 +1,7 @@
 package com.lawrence.monitor.core;
 
 
+import com.lawrence.monitor.AgentConfig;
 import com.lawrence.monitor.write.impl.FileWriter;
 import com.lawrence.monitor.StatisticsType;
 
@@ -13,7 +14,7 @@ public abstract class AbstractMonitor extends FileWriter implements Monitor {
     /**
      * 内部调用，初始化所有单例对象，子类自行实现
      */
-    public abstract void init();
+    public abstract void init(AgentConfig agentConfig);
 
     /**
      * 统计类归属类型

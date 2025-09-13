@@ -2,7 +2,7 @@ package com.lawrence;
 
 import com.lawrence.monitor.AgentConfig;
 import com.lawrence.monitor.TransformerService;
-import com.lawrence.monitor.util.JsonUtils;
+import com.lawrence.utils.json.JsonUtils;
 import com.lawrence.utils.log.Logger;
 import com.lawrence.utils.log.LoggerFactory;
 import javassist.*;
@@ -19,7 +19,6 @@ import java.sql.Driver;
 import java.util.*;
 
 /**
- * @author hz20035009-逍遥
  * date   2020/6/10 14:58
  * <p>
  * attach注入的入口
@@ -44,7 +43,7 @@ public class AttachMain {
         AgentConfig agentConfig = AgentConfig.init(properties);
         LoggerFactory.init(agentConfig.getLogLevel());
 
-        LOGGER = LoggerFactory.getLog(AttachMain.class);
+        LOGGER = LoggerFactory.getLogger(AttachMain.class);
         LOGGER.debug("init agent config: {}", JsonUtils.toJson(agentConfig));
         inst.addTransformer(new TransformerService(agentConfig), true);
     }

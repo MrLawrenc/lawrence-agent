@@ -2,7 +2,7 @@ package com.lawrence.monitor.stack;
 
 
 import com.lawrence.monitor.util.Collector;
-import com.lawrence.monitor.util.GlobalUtil;
+import com.lawrence.monitor.util.StatisticsHelper;
 import com.lawrence.monitor.util.ThreadLocalUtil;
 import com.lawrence.monitor.write.Writeable;
 import lombok.Data;
@@ -38,7 +38,7 @@ public class StackNode implements Writeable {
             log.info("thread({}) reuse,remove nodeChain({}).", Thread.currentThread().getName(), key);
         }
 
-        this.id = GlobalUtil.getId();
+        this.id = StatisticsHelper.getId();
         // 0为当前方法 ； 1为createParentNode实例化处，2通常在monitor实现类 ； 3才是真的的调用处
         Node parentNode = new Node(null, 1L).createStackInfo(new Throwable().getStackTrace()[3]);
         Collector.addNode(id, parentNode);
@@ -127,14 +127,14 @@ public class StackNode implements Writeable {
          * 以当前node顶层节点，打印出当前node的树形结构
          */
         public void printNodeTreeByParent() {
-            printNodeTree(this, GlobalUtil.EMPTY_STR);
+            printNodeTree(this, StatisticsHelper.EMPTY_STR);
         }
 
         private void printNodeTree(StackNode.Node parentNode, String str) {
             System.out.println(str + parentNode.getStackInfo());
             List<StackNode.Node> child = parentNode.getChild();
             if (Objects.nonNull(child) && child.size() > 0) {
-                child.forEach(c -> printNodeTree(c, str + GlobalUtil.TABS));
+                child.forEach(c -> printNodeTree(c, str + StatisticsHelper.TABS));
             }
         }
 
