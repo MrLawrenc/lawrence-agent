@@ -25,25 +25,14 @@ import java.util.*;
  */
 public class AttachMain {
 
-    private static Logger LOGGER = null;
-
     public static void premain(String agentOps, Instrumentation inst) {
         System.out.println("#######Agent  Success#######");
         System.out.println("Agent Param: " + agentOps);
 
-        Properties properties = new Properties();
-        try (InputStream is = AttachMain.class.getClassLoader().getResourceAsStream(agentOps)) {
-            if (is == null) {
-                throw new RuntimeException("agent config file not found: " + agentOps);
-            }
-            properties.load(is);
-        } catch (IOException e) {
-            throw new RuntimeException("agent config file not found: " + agentOps, e);
-        }
-        AgentConfig agentConfig = AgentConfig.init(properties);
+        AgentConfig agentConfig = AgentConfig.init(agentOps);
         LoggerFactory.init(agentConfig.getLogLevel());
 
-        LOGGER = LoggerFactory.getLogger(AttachMain.class);
+        Logger LOGGER = LoggerFactory.getLogger(AttachMain.class);
         LOGGER.debug("init agent config: {}", JsonUtils.toJson(agentConfig));
         inst.addTransformer(new TransformerService(agentConfig), true);
     }
@@ -206,4 +195,5 @@ public class AttachMain {
         }, true);
         return targetClz;
     }
+
 }

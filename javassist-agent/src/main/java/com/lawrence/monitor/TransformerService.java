@@ -11,6 +11,8 @@ import com.lawrence.monitor.util.ThreadLocalUtil;
 import com.lawrence.utils.log.Logger;
 import com.lawrence.utils.log.LoggerFactory;
 import javassist.*;
+import javassist.bytecode.StackMap;
+import javassist.bytecode.StackMapTable;
 import lombok.SneakyThrows;
 
 import java.io.File;
@@ -116,6 +118,9 @@ public class TransformerService implements ClassFileTransformer {
                     CtClass throwable = pool.get(Throwable.class.getName());
 
                     MethodInfo methodInfo = monitor.getMethodInfo(newMethodName);
+                   // method.getMethodInfo().removeCodeAttribute();
+                   // method.getMethodInfo().removeAttribute(StackMapTable.tag);
+                   // method.getMethodInfo().removeAttribute(StackMap.tag); // JDK6 兼容
                     if (methodInfo.isNewInfo()) {
                         method.setBody(methodInfo.getNewBody());
                     } else {
