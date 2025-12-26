@@ -6,6 +6,6 @@ package com.lawrence.monitor;
  * 统计类的类型
  */
 public enum StatisticsType {
-    SERVLET(), JDBC(), SERVLET3(),
+    SERVLET(), JDBC(), SERVLET3(),BF()
     ;
 }

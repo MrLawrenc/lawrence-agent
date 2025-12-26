@@ -1,5 +1,6 @@
 package com.lawrence.test.javassist._03;
 
+import com.lawrence.test.javassist._03.bytesforce.TestBD;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,6 +27,7 @@ public class Servlet03Agent {
     ) {
         new OtherClassA().a();
         new OtherClassB().b();
+        new TestBD().test();
         return "hello " + param1;
     }
 }
