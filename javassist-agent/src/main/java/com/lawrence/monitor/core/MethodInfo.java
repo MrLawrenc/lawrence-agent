@@ -6,6 +6,15 @@ import javassist.Modifier;
 import lombok.Data;
 
 /**
+ * <pre>
+ *      $0      -> this（实例方法）
+ *      $1..$n  -> 参数
+ *      $$      -> 参数展开
+ *      $args   -> Object[]
+ *      $r      -> 返回类型
+ *      $w      -> 包装类型
+ * </pre>
+ *
  * @author : MrLawrenc
  * date  2020/7/4 19:27
  * <p>
@@ -151,7 +160,8 @@ public class MethodInfo {
                 throw new IllegalStateException("The current class cannot be interface and abstract!");
             }
             String clzName = monitor.getClass().getName();
-            String begin = clzName + " monitor = " + clzName + ".INSTANCE;\n";
+            //强制类型转换 泛型擦除了
+            String begin = clzName + " monitor = (" + clzName + ")  com.lawrence.monitor.core.MonitorRegistry.get(" + clzName + ".class);\n";
             String statisticName = Statistics.class.getName();
             begin += statisticName + " statistic = monitor.begin($0,$args);";
 

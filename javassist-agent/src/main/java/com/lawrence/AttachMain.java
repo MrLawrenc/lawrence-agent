@@ -30,7 +30,7 @@ public class AttachMain {
         System.out.println("Agent Param: " + agentOps);
 
         AgentConfig agentConfig = AgentConfig.init(agentOps);
-        LoggerFactory.init(agentConfig.getLogLevel());
+        LoggerFactory.init(agentConfig.getLog().getLevel());
 
         Logger LOGGER = LoggerFactory.getLogger(AttachMain.class);
         LOGGER.debug("init agent config: {}", JsonUtils.toJson(agentConfig));

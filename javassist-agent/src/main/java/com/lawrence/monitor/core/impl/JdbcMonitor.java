@@ -23,6 +23,8 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -36,7 +38,6 @@ public class JdbcMonitor extends AbstractMonitor {
     private static final Logger LOGGER = LoggerFactory.getLogger(JdbcMonitor.class);
 
     private static final String TARGET_CLZ = "com.mysql.cj.jdbc.NonRegisteringDriver";
-    public static AbstractMonitor INSTANCE;
     /**
      * {@link Connection}中需要代理的方法名集合
      */
@@ -64,7 +65,6 @@ public class JdbcMonitor extends AbstractMonitor {
 
     @Override
     public void init(AgentConfig agentConfig) {
-        JdbcMonitor.INSTANCE = this;
     }
 
     @Override
@@ -139,8 +139,9 @@ public class JdbcMonitor extends AbstractMonitor {
     }
 
     @Override
-    public CtMethod targetMethod(ClassPool pool, CtClass clz) throws NotFoundException {
-        return clz.getMethod("connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;");
+    public List<CtMethod> targetMethods(ClassPool pool, CtClass clz) throws NotFoundException {
+        CtMethod ctMethod = clz.getMethod("connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;");
+        return Collections.singletonList(ctMethod);
     }
 
     @Override

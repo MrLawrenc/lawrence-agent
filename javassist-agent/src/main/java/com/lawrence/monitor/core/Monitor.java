@@ -7,6 +7,8 @@ import javassist.CtClass;
 import javassist.CtMethod;
 import javassist.NotFoundException;
 
+import java.util.List;
+
 /**
  * @author : MrLawrenc
  * date  2020/7/4 19:00
@@ -27,11 +29,11 @@ public interface Monitor {
     /**
      * 获取目标方法
      *
-     * @param clz 目标方法所在类
+     * @param clz  目标方法所在类
      * @param pool poll
      * @return 目标方法
      */
-    CtMethod targetMethod(ClassPool pool, CtClass clz) throws NotFoundException;
+    List<CtMethod> targetMethods(ClassPool pool, CtClass clz) throws NotFoundException;
 
     /**
      * 返回植入方法之前的代码

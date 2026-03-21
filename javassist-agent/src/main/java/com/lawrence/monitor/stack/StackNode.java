@@ -59,7 +59,7 @@ public class StackNode implements Writeable {
         List<Node> currentNodeChain = Collector.getContainer(id).getNodeList();
         Node node = getCurrentNode(id);
         currentNodeChain.add(node);
-        log.info("result nodes:{}", currentNodeChain);
+        //log.info("result nodes:{}", currentNodeChain);
     }
 
     private static Node getCurrentNode(String id) {

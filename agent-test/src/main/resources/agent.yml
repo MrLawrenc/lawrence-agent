@@ -1,0 +1,21 @@
+log:
+  level: DEBUG
+jdbcConfig:
+  enable: true
+  scanPackages:
+    - com.mysql.cj.jdbc
+
+servletConfig:
+  enable: true
+  version: 3
+  scanPackages:
+    - com.mysql.cj.jdbc
+
+businessClassRules:
+  - className: com.lawrence.test.javassist._03.com.bytesforce.**
+    methods:
+      - methodNames:
+          - test*
+      - methodNames:
+          - save*
+        includeStatic: true
