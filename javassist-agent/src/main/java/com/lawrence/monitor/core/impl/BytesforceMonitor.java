@@ -1,6 +1,7 @@
 package com.lawrence.monitor.core.impl;
 
 import com.lawrence.monitor.AgentConfig;
+import com.lawrence.monitor.ClassMatchRule;
 import com.lawrence.monitor.StatisticsType;
 import com.lawrence.monitor.core.AbstractMonitor;
 import com.lawrence.monitor.core.MethodInfo;
@@ -11,10 +12,7 @@ import com.lawrence.monitor.write.Writeable;
 import com.lawrence.monitor.write.WriterResp;
 import com.lawrence.utils.log.Logger;
 import com.lawrence.utils.log.LoggerFactory;
-import javassist.ClassPool;
-import javassist.CtClass;
-import javassist.CtMethod;
-import javassist.NotFoundException;
+import javassist.*;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -23,7 +21,12 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
+
+import static java.util.stream.Collectors.toList;
 
 /**
  * @author : MrLawrenc
@@ -35,36 +38,11 @@ public class BytesforceMonitor extends AbstractMonitor {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BytesforceMonitor.class);
 
-    private static final String TARGET_CLZ = "com.mysql.cj.jdbc.NonRegisteringDriver";
-    public static BytesforceMonitor INSTANCE;
-    /**
-     * {@link Connection}中需要代理的方法名集合
-     */
-    private static final String[] PROXY_CONNECTION_METHOD = new String[]{"prepareStatement"};
-    /**
-     * {@link PreparedStatement}中需要代理的方法名集合
-     * 若执行查询时，没有使用{@link PreparedStatement#executeQuery()}方法获取查询结果，
-     * 则之后会调用{@link PreparedStatement#getResultSet()}方法获取结果集
-     */
-    private static final String[] STATEMENT_METHOD = new String[]{"executeUpdate", "execute", "executeQuery", "getResultSet"};
-
-
-    private String begin = "long start = System.currentTimeMillis();" +
-            "com.github.mrlawrenc.attach.monitor.impl.JdbcMonitor collector=com.github.mrlawrenc.attach.monitor.impl.JdbcMonitor.INSTANCE;";
-
-    private String end = "java.sql.Connection result=collector.proxyConnection((java.sql.Connection)c);" +
-            "long cos = System.currentTimeMillis()-start;" +
-            "System.out.println(\"方法耗时:\"+cos);";
-
-    private String catchSrc = "{ $e.printStackTrace();" +
-            "throw $e;}";
-
-    private String finallySrc = "{Long end=System.nanoTime();\n" +
-            "System.out.println(\"finally end:\");}";
+    protected List<ClassMatchRule> businessClassRules;
 
     @Override
     public void init(AgentConfig agentConfig) {
-        BytesforceMonitor.INSTANCE = this;
+        this.businessClassRules = agentConfig.getBusinessClassRules();
     }
 
     @Override
@@ -75,14 +53,37 @@ public class BytesforceMonitor extends AbstractMonitor {
 
     @Override
     public boolean isTarget(String className) {
-        return className.replace("/", ".").contains("bytesforce");
+        String fullClassName = className.replace("/", ".");
+        boolean matched = businessClassRules.stream().anyMatch(rule -> rule.match(fullClassName));
+        if (fullClassName.contains("bytesforce")) {
+            LOGGER.info("monitor class:{} matched:{}", className, matched);
+        }
+        return matched;
     }
 
+    //23+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:equals matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:finalize matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:test matched:true isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:toString matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:getClass matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:notifyAll matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:hashCode matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:wait matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:notify matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:test2 matched:true isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:wait matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:wait matched:false isStatic:false isPrivate:false
+    //2025-12-27T14:53:43.223+08:00  INFO  24708[http-nio-8080-exec-1] com.lawrence.monitor.core.impl.BytesforceMonitor    : method:clone matched:false isStatic:false isPrivate:false
     @Override
-    public CtMethod targetMethod(ClassPool pool, CtClass clz) throws NotFoundException {
-        CtMethod ctMethod = Arrays.stream(clz.getMethods()).filter(method -> method.getName().equals("test")).findFirst().orElse(null);
-        LOGGER.info("targetMethod:{}", ctMethod);
-        return ctMethod;
+    public List<CtMethod> targetMethods(ClassPool pool, CtClass clz) throws NotFoundException {
+        return Arrays.stream(clz.getMethods()).filter(method -> {
+            boolean matched = method.getName().contains("test");
+            int mod = method.getModifiers();
+            boolean isStatic = Modifier.isStatic(mod);
+            boolean isPrivate = Modifier.isPrivate(mod);
+            LOGGER.debug("method:{} matched:{} isStatic:{} isPrivate:{}", method.getName(), matched, isStatic, isPrivate);
+            return matched && !isStatic && !isPrivate;
+        }).toList();
     }
 
     @Override
@@ -94,6 +95,8 @@ public class BytesforceMonitor extends AbstractMonitor {
     public Statistics begin(Object obj, Object... args) {
         Statistics statistics = StatisticsHelper.createStatistics(JdbcStatistics.class);
         LOGGER.debug("begin class:{} args:{}", obj.getClass(), args);
+        statistics.setExecutor(obj);
+        statistics.setArgs(args);
         statistics.setStartTime(System.currentTimeMillis());
         return statistics;
     }
@@ -106,10 +109,9 @@ public class BytesforceMonitor extends AbstractMonitor {
     @Override
     public Object end(Statistics current, Object obj) {
         current.setEndTime(System.currentTimeMillis());
-        LOGGER.info("Cost===>" + (current.getEndTime() - current.getStartTime()));
+        LOGGER.info("Cost===>" + current.getCosTime());
         return obj;
     }
-
 
     @Override
     public WriterResp write(Writeable statistics) {

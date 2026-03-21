@@ -26,6 +26,7 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.*;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static com.lawrence.monitor.util.Collector.buildStack;
@@ -41,11 +42,9 @@ public class ServletMonitor extends AbstractMonitor {
 
     private static final Logger logger = LoggerFactory.getLogger(ServletMonitor.class);
     private static final String TARGET_CLZ = "javax.servlet.http.HttpServlet";
-    public static AbstractMonitor INSTANCE;
 
     @Override
     public void init(AgentConfig agentConfig) {
-        ServletMonitor.INSTANCE = this;
     }
 
 
@@ -55,9 +54,10 @@ public class ServletMonitor extends AbstractMonitor {
     }
 
     @Override
-    public CtMethod targetMethod(ClassPool pool, CtClass clz) throws NotFoundException {
-        return clz.getDeclaredMethod("service", new CtClass[]{pool
+    public List<CtMethod> targetMethods(ClassPool pool, CtClass clz) throws NotFoundException {
+        CtMethod ctMethod = clz.getDeclaredMethod("service", new CtClass[]{pool
                 .get("javax.servlet.http.HttpServletRequest"), pool.get("javax.servlet.http.HttpServletResponse")});
+        return List.of(ctMethod);
     }
 
     @Override

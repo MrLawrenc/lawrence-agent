@@ -29,6 +29,21 @@ public abstract class Statistics implements Serializable, Writeable {
     }
 
     /**
+     * 执行的类名（全限定名）
+     */
+    private String className;
+
+    /**
+     * 执行的方法名
+     */
+    private String methodName;
+
+    /**
+     * 方法签名（可选，但强烈推荐）
+     */
+    private String methodDesc; // 或 signature
+
+    /**
      * 方法执行者
      */
     private Object executor;
@@ -37,6 +52,17 @@ public abstract class Statistics implements Serializable, Writeable {
      * 方法参数
      */
     private Object[] args;
+
+
+    /**
+     * 是否静态方法
+     */
+    protected boolean isStatic;
+
+    /**
+     * 是否构造方法
+     */
+    protected boolean isConstructor;
 
     /**
      * 方法执行产生的异常信息，若无异常则为null

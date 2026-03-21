@@ -3,6 +3,7 @@ package com.lawrence.monitor;
 import com.lawrence.AttachMain;
 import com.lawrence.utils.log.LoggerFactory;
 import lombok.Data;
+import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -20,9 +21,17 @@ public class AgentConfig {
     private JdbcConfig jdbcConfig;
     private ServletConfig servletConfig;
 
-    private Level logLevel;
+    /**
+     * 业务级自定义监控规则
+     */
+    private List<ClassMatchRule> businessClassRules;
+
+    private LogConfig log;
 
     public static AgentConfig init(String agentOps) {
+        if (agentOps.endsWith(".yml")) {
+            return loadFromYaml(AttachMain.class.getClassLoader().getResourceAsStream(agentOps));
+        }
         Properties properties = parseProperties(agentOps);
         AgentConfig agentConfig = new AgentConfig();
         JdbcConfig jdbcConfig = new JdbcConfig();
@@ -50,7 +59,9 @@ public class AgentConfig {
         }
 
         String level = properties.getProperty("log.level", "info");
-        agentConfig.setLogLevel(LoggerFactory.parseLevel(level));
+        LogConfig logConfig = new LogConfig();
+        logConfig.setLevel(level);
+        agentConfig.setLog(logConfig);
         return agentConfig;
     }
 
@@ -66,6 +77,11 @@ public class AgentConfig {
             throw new RuntimeException("agent config file not found: " + agentOps, e);
         }
         return properties;
+    }
+
+    static AgentConfig loadFromYaml(InputStream in) {
+        Yaml yaml = new Yaml();
+        return yaml.loadAs(in, AgentConfig.class);
     }
 
 }

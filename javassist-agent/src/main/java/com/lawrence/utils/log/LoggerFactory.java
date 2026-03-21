@@ -18,8 +18,8 @@ public class LoggerFactory {
     /**
      * 初始化全局日志等级，只调用一次即可
      */
-    public static void init(Level level) {
-        defaultLevel = level;
+    public static void init(String level) {
+        defaultLevel = LoggerFactory.parseLevel(level);
 
         if (!initialized) {
             java.util.logging.Logger logger = java.util.logging.Logger.getLogger("com.lawrence"); // 只针对自己包

@@ -29,6 +29,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.*;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static com.lawrence.monitor.util.Collector.buildStack;
@@ -40,11 +41,9 @@ import static com.lawrence.monitor.util.Collector.print;
 public class JakartaServletMonitor extends AbstractMonitor {
     private static final Logger logger = LoggerFactory.getLogger(JakartaServletMonitor.class);
     private static final String TARGET_CLZ = "jakarta.servlet.http.HttpServlet";
-    public static JakartaServletMonitor INSTANCE;
 
     @Override
     public void init(AgentConfig agentConfig) {
-        JakartaServletMonitor.INSTANCE = this;
     }
 
 
@@ -55,9 +54,10 @@ public class JakartaServletMonitor extends AbstractMonitor {
     }
 
     @Override
-    public CtMethod targetMethod(ClassPool pool, CtClass clz) throws NotFoundException {
-        return clz.getDeclaredMethod("service", new CtClass[]{pool
+    public List<CtMethod> targetMethods(ClassPool pool, CtClass clz) throws NotFoundException {
+        CtMethod ctMethod= clz.getDeclaredMethod("service", new CtClass[]{pool
                 .get("jakarta.servlet.http.HttpServletRequest"), pool.get("jakarta.servlet.http.HttpServletResponse")});
+        return List.of(ctMethod);
     }
 
     @Override

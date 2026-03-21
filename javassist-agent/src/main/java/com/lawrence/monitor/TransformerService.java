@@ -3,16 +3,12 @@ package com.lawrence.monitor;
 import com.lawrence.monitor.core.AbstractMonitor;
 import com.lawrence.monitor.core.MethodInfo;
 import com.lawrence.monitor.core.Monitor;
-import com.lawrence.monitor.core.impl.JakartaServletMonitor;
-import com.lawrence.monitor.core.impl.JdbcMonitor;
-import com.lawrence.monitor.core.impl.ServletMonitor;
+import com.lawrence.monitor.core.MonitorRegistry;
 import com.lawrence.monitor.stack.StackNode;
 import com.lawrence.monitor.util.ThreadLocalUtil;
 import com.lawrence.utils.log.Logger;
 import com.lawrence.utils.log.LoggerFactory;
 import javassist.*;
-import javassist.bytecode.StackMap;
-import javassist.bytecode.StackMapTable;
 import lombok.SneakyThrows;
 
 import java.io.File;
@@ -21,6 +17,7 @@ import java.security.ProtectionDomain;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
 
 /**
  * @author : MrLawrenc
@@ -68,11 +65,6 @@ public class TransformerService implements ClassFileTransformer {
             "   }\n" +
             "}";
 
-    /**
-     * 所有monitor实现类集合
-     */
-    private final List<AbstractMonitor> monitorList = new ArrayList<>();
-
     private final AgentConfig agentConfig;
 
     public TransformerService(AgentConfig agentConfig) {
@@ -81,7 +73,7 @@ public class TransformerService implements ClassFileTransformer {
         for (AbstractMonitor monitor : loader) {
             logger.info("load monitor:{}", monitor.getClass().getName());
             monitor.init(this.agentConfig);
-            monitorList.add(monitor);
+            MonitorRegistry.register(monitor);
         }
     }
 
@@ -103,32 +95,35 @@ public class TransformerService implements ClassFileTransformer {
             return data;
         }
 
-        Monitor monitor = monitorList.stream().filter(m -> m.isTarget(className)).findAny().orElse(null);
+        Monitor monitor = MonitorRegistry.getMonitors().stream().filter(m -> m.isTarget(className)).findAny().orElse(null);
         String clzName = className.replaceAll("/", ".");
         try {
             if (Objects.nonNull(monitor)) {
                 logger.info("!!!!!monitor class[{}] for class[{}]", monitor.getClass().getName(), clzName);
-                CtMethod method = monitor.targetMethod(pool, targetClz);
-                if (Objects.nonNull(method)) {
-                    logger.info("target {}#{}  use monitor:{}", clzName, method.getName(), monitor.getClass().getName());
-                    String newMethodName = method.getName() + AGENT_SUFFIX;
-                    logger.info("start copy new method : {}", newMethodName);
-                    CtMethod newMethod = CtNewMethod.copy(method, newMethodName, targetClz, null);
-                    targetClz.addMethod(newMethod);
-                    CtClass throwable = pool.get(Throwable.class.getName());
+                List<CtMethod> methods = monitor.targetMethods(pool, targetClz);
+                if (Objects.nonNull(methods) && methods.size() > 0) {
+                    for (int i = 0; i < methods.size(); i++) {
+                        CtMethod method = methods.get(i);
+                        logger.info("target {}#{}  use monitor:{}", clzName, method.getName(), monitor.getClass().getName());
+                        String newMethodName = method.getName() + AGENT_SUFFIX;
+                        logger.info("start copy new method : {}", newMethodName);
+                        CtMethod newMethod = CtNewMethod.copy(method, newMethodName, targetClz, null);
+                        targetClz.addMethod(newMethod);
+                        CtClass throwable = pool.get(Throwable.class.getName());
 
-                    MethodInfo methodInfo = monitor.getMethodInfo(newMethodName);
-                   // method.getMethodInfo().removeCodeAttribute();
-                   // method.getMethodInfo().removeAttribute(StackMapTable.tag);
-                   // method.getMethodInfo().removeAttribute(StackMap.tag); // JDK6 兼容
-                    if (methodInfo.isNewInfo()) {
-                        method.setBody(methodInfo.getNewBody());
-                    } else {
-                        method.setBody(methodInfo.getTryBody());
-                        method.addCatch(methodInfo.getCatchBody(), throwable);
-                        method.insertAfter(methodInfo.getFinallyBody(), true);
+                        MethodInfo methodInfo = monitor.getMethodInfo(newMethodName);
+                        // method.getMethodInfo().removeCodeAttribute();
+                        // method.getMethodInfo().removeAttribute(StackMapTable.tag);
+                        // method.getMethodInfo().removeAttribute(StackMap.tag); // JDK6 兼容
+                        if (methodInfo.isNewInfo()) {
+                            method.setBody(methodInfo.getNewBody());
+                        } else {
+                            method.setBody(methodInfo.getTryBody());
+                            method.addCatch(methodInfo.getCatchBody(), throwable);
+                            method.insertAfter(methodInfo.getFinallyBody(), true);
+                        }
+                        logger.info("copy method{} end", method.getName());
                     }
-                    logger.info("copy method{} end", method.getName());
                     targetClz.writeFile("class");
                     logger.info(new File("class").getAbsolutePath());
                     return targetClz.toBytecode();

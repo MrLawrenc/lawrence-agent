@@ -19,6 +19,7 @@ dependencies {
     implementation("org.slf4j:slf4j-simple:1.7.26")
     implementation("com.eclipsesource.minimal-json:minimal-json:0.9.5")
     implementation("net.bytebuddy:byte-buddy:1.14.2")
+    implementation("org.yaml:snakeyaml:1.33")
 
     compileOnly("org.projectlombok:lombok:1.18.22")
     annotationProcessor("org.projectlombok:lombok:1.18.22")
