@@ -1,27 +1,20 @@
 package com.lawrence.monitor.statistics;
 
-import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
-import lombok.experimental.Accessors;
 
 import java.sql.ResultSet;
 
 /**
- * @author : MrLawrenc
- * date  2020/7/5 19:10
- * <p>
- * Jdbc收集器
+ * JDBC 监控统计类
  */
-@EqualsAndHashCode(callSuper = true)
 @Getter
 @Setter
 @ToString(callSuper = true)
-@Accessors(chain = true)
 public class JdbcStatistics extends Statistics {
-    private JdbcStatistics(String id) {
-        super(id);
+    public JdbcStatistics(String traceId, String spanId) {
+        super(traceId, spanId);
     }
 
     /**
@@ -47,4 +40,9 @@ public class JdbcStatistics extends Statistics {
      */
     private boolean success;
 
+    /** 原始 Connection 对象（代理前） */
+    private Object originalConnection;
+
+    /** 代理后的 Connection 对象 */
+    private Object proxiedConnection;
 }

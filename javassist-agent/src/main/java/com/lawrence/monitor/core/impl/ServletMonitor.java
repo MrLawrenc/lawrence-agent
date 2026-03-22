@@ -1,23 +1,9 @@
 package com.lawrence.monitor.core.impl;
 
-import com.lawrence.monitor.AgentConfig;
-import com.lawrence.monitor.stack.StackNode;
+import com.lawrence.monitor.StatisticsType;
 import com.lawrence.monitor.statistics.ServletStatistics;
 import com.lawrence.monitor.statistics.Statistics;
-import com.lawrence.monitor.util.Collector;
-import com.lawrence.monitor.util.StatisticsHelper;
-import com.lawrence.monitor.util.ThreadLocalUtil;
-import com.lawrence.monitor.write.Writeable;
-import com.lawrence.monitor.write.WriterResp;
-import com.lawrence.monitor.StatisticsType;
-import com.lawrence.monitor.core.AbstractMonitor;
-import com.lawrence.monitor.core.MethodInfo;
-import com.lawrence.utils.log.Logger;
-import com.lawrence.utils.log.LoggerFactory;
-import javassist.ClassPool;
-import javassist.CtClass;
-import javassist.CtMethod;
-import javassist.NotFoundException;
+import com.lawrence.monitor.trace.SpanNode;
 
 import javax.servlet.ServletInputStream;
 import javax.servlet.http.HttpServletRequest;
@@ -26,43 +12,22 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.*;
 import java.util.Enumeration;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
-import static com.lawrence.monitor.util.Collector.buildStack;
-import static com.lawrence.monitor.util.Collector.print;
-
 /**
- * @author : MrLawrenc
- * date  2020/7/4 0:16
- * <p>
- * JDBC监控器实现
+ * javax.servlet (Tomcat 9 / Servlet 4) 监控器。
+ * 公共逻辑见 {@link AbstractServletMonitor}。
  */
-public class ServletMonitor extends AbstractMonitor {
-
-    private static final Logger logger = LoggerFactory.getLogger(ServletMonitor.class);
-    private static final String TARGET_CLZ = "javax.servlet.http.HttpServlet";
+public class ServletMonitor extends AbstractServletMonitor {
 
     @Override
-    public void init(AgentConfig agentConfig) {
-    }
-
-
-    @Override
-    public boolean isTarget(String className) {
-        return TARGET_CLZ.equals(className.replace("/", "."));
+    protected String targetClassName() {
+        return "javax.servlet.http.HttpServlet";
     }
 
     @Override
-    public List<CtMethod> targetMethods(ClassPool pool, CtClass clz) throws NotFoundException {
-        CtMethod ctMethod = clz.getDeclaredMethod("service", new CtClass[]{pool
-                .get("javax.servlet.http.HttpServletRequest"), pool.get("javax.servlet.http.HttpServletResponse")});
-        return List.of(ctMethod);
-    }
-
-    @Override
-    public MethodInfo getMethodInfo(String methodName) {
-        return MethodInfo.newBuilder().createVoidBody(this, methodName);
+    protected String servletPkg() {
+        return "javax.servlet";
     }
 
     @Override
@@ -72,105 +37,69 @@ public class ServletMonitor extends AbstractMonitor {
 
     @Override
     public Statistics begin(Object obj, Object... args) {
-        ThreadLocalUtil.globalThreadLocal.set(StackNode.createParentNode());
-
-        ServletStatistics statistics = StatisticsHelper.createStatistics(ServletStatistics.class);
-        HttpServletRequest servletRequest = (HttpServletRequest) args[0];
-        StringBuffer url = servletRequest.getRequestURL();
-        statistics.setUrl(url.toString());
-        statistics.setArgs(args);
+        HttpServletRequest request = (HttpServletRequest) args[0];
+        SpanNode span = trace.beginSpan(targetClassName(), "service");
+        ServletStatistics statistics = new ServletStatistics(span.getTraceId(), span.getSpanId());
+        statistics.setSpan(span);
+        statistics.setClassName(targetClassName());
+        statistics.setMethodName("service");
+        statistics.setUrl(request.getRequestURL().toString());
+        statistics.setMethod(request.getMethod());
         statistics.setStartTime(System.currentTimeMillis());
 
-        statistics.setMethod(servletRequest.getMethod());
-
-        // if (Objects.nonNull(servletRequest.getContentType()) && servletRequest.getContentType().contains("json")) {
-        //读了req之后就没法读取了 ,所以将req包装为可重复读取的httpRequest
-        MultiReadHttpServletRequest wrapperRequest = new MultiReadHttpServletRequest(servletRequest);
-        args[0] = wrapperRequest;
-
+        MultiReadHttpServletRequest wrapped = new MultiReadHttpServletRequest(request);
+        args[0] = wrapped;
+        statistics.setArgs(args);
 
         try {
-            BufferedReader reader = wrapperRequest.getReader();
-            String line;
+            BufferedReader reader = wrapped.getReader();
             StringBuilder sb = new StringBuilder();
-            while ((line = reader.readLine()) != null) {
-                sb.append(line);
-            }
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
             statistics.setBodyData(sb.toString());
         } catch (IOException e) {
             logger.error("read body data error", e);
         }
-        //url参数
-        Enumeration<String> parameterNames = wrapperRequest.getParameterNames();
+
+        Enumeration<String> names = wrapped.getParameterNames();
         Map<String, String> urlParam = new HashMap<>();
-        while (parameterNames.hasMoreElements()) {
-            String element = parameterNames.nextElement();
-            urlParam.put(element, wrapperRequest.getParameter(element));
+        while (names.hasMoreElements()) {
+            String name = names.nextElement();
+            urlParam.put(name, wrapped.getParameter(name));
         }
         statistics.setUrlData(urlParam.toString());
         return statistics;
     }
 
     @Override
-    public void exception(Statistics statistics, Throwable t) {
-        statistics.setT(t);
-    }
-
-    @Override
-    public Object end(Statistics current, Object obj) {
-        current.setEndTime(System.currentTimeMillis());
-        ServletStatistics servletStatistics = (ServletStatistics) current;
-        HttpServletResponse servletResponse = (HttpServletResponse) servletStatistics.getArgs()[1];
-        servletStatistics.setRespStatus(servletResponse.getStatus());
-        logger.info("monitor data:{}", servletStatistics);
-
-        Collector.RESULT.forEach((outerKey, outerValue) -> {
-            StackNode.Node head = buildStack(outerValue.getNodeList());
-            print(head);
-        });
-        return obj;
-    }
-
-    @Override
-    public WriterResp write(Writeable statistics) {
+    protected Object doEnd(Statistics statistics, Object result) {
+        HttpServletResponse response = (HttpServletResponse) ((ServletStatistics) statistics).getArgs()[1];
+        ((ServletStatistics) statistics).setRespStatus(response.getStatus());
         return null;
     }
 
-    /**
-     * 包装req对象，使得req可以重复读取.
-     * <p>RequestWrapper
-     * 当在使用地获取input stream时 实际获取的是包装之后的input stream{@link CachedServletInputStream}
-     */
     public static class MultiReadHttpServletRequest extends HttpServletRequestWrapper {
-        private final ByteArrayOutputStream cachedBytes;
+        private final ByteArrayOutputStream cachedBytes = new ByteArrayOutputStream();
 
         public MultiReadHttpServletRequest(HttpServletRequest request) {
             super(request);
-            cachedBytes = new ByteArrayOutputStream();
-
-            //复制 req 流到内存中,切记不能关inputStream
             try {
-                ServletInputStream inputStream = request.getInputStream();
-                byte[] data = new byte[1024];
-
-                int start = 0;
-                while (inputStream.read(data) > 0) {
-                    cachedBytes.write(data, start, data.length);
-                    start += data.length;
-                }
+                ServletInputStream in = request.getInputStream();
+                byte[] buf = new byte[1024];
+                int read;
+                while ((read = in.read(buf)) > 0) cachedBytes.write(buf, 0, read);
             } catch (IOException e) {
-                logger.error("copy wrapper request fail!", e);
+                // ignore
             }
-
         }
 
         @Override
-        public ServletInputStream getInputStream() throws IOException {
+        public ServletInputStream getInputStream() {
             return new CachedServletInputStream(cachedBytes);
         }
 
         @Override
-        public BufferedReader getReader() throws IOException {
+        public BufferedReader getReader() {
             return new BufferedReader(new InputStreamReader(getInputStream()));
         }
     }
@@ -179,9 +108,7 @@ public class ServletMonitor extends AbstractMonitor {
         private final ByteArrayInputStream input;
 
         public CachedServletInputStream(ByteArrayOutputStream cachedBytes) {
-            // create a new input stream from the cached request body
-            byte[] bytes = cachedBytes.toByteArray();
-            input = new ByteArrayInputStream(bytes);
+            input = new ByteArrayInputStream(cachedBytes.toByteArray());
         }
 
         @Override

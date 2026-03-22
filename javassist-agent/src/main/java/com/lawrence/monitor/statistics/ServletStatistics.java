@@ -1,24 +1,19 @@
 package com.lawrence.monitor.statistics;
 
-import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 
 /**
- * @author : MrLawrenc
- * date  2020/7/7 14:10
- * <p>
- * Servlet收集器
+ * Servlet 监控统计类
  */
-@EqualsAndHashCode(callSuper = true)
 @Getter
 @Setter
 @ToString(callSuper = true)
 public class ServletStatistics extends Statistics {
 
-    public ServletStatistics(String idx) {
-        super(idx);
+    public ServletStatistics(String traceId, String spanId) {
+        super(traceId, spanId);
     }
 
     /**

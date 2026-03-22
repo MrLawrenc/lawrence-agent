@@ -1,4 +1,4 @@
 com.lawrence.monitor.core.impl.JdbcMonitor
 com.lawrence.monitor.core.impl.ServletMonitor
 com.lawrence.monitor.core.impl.JakartaServletMonitor
-com.lawrence.monitor.core.impl.BytesforceMonitor
+com.lawrence.monitor.core.impl.TimingMonitor
