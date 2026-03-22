@@ -43,6 +43,18 @@ public interface Monitor {
      */
     MethodInfo getMethodInfo(String oldMethodName);
 
+    /**
+     * 返回植入方法体，携带原始方法引用，便于获取返回类型等元信息。
+     * 默认实现直接转发给 {@link #getMethodInfo(String)}，子类可按需覆盖。
+     *
+     * @param oldMethodName  复制后的方法名（原方法名 + 后缀）
+     * @param originalMethod 原始 CtMethod，可用于获取返回类型、参数等信息
+     * @return 方法植入体描述
+     */
+    default MethodInfo getMethodInfo(String oldMethodName, CtMethod originalMethod) {
+        return getMethodInfo(oldMethodName);
+    }
+
     Statistics begin(Object obj, Object... args);
 
     void exception(Statistics statistics, Throwable t);

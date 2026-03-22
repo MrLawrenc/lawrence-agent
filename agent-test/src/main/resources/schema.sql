@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS users (
+    id   BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(64) NOT NULL,
+    age  INT
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id      BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    product VARCHAR(128),
+    amount  DECIMAL(10,2)
+);

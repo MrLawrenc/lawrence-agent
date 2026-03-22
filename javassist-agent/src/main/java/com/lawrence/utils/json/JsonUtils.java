@@ -59,6 +59,7 @@ public class JsonUtils {
         if (v instanceof String) return Json.value((String) v);
         if (v instanceof Number) return Json.value(((Number) v).doubleValue());
         if (v instanceof Boolean) return Json.value((Boolean) v);
+        if (v instanceof Enum) return Json.value(((Enum<?>) v).name());
         if (v instanceof Map) return mapToJson((Map<?, ?>) v);
         if (v instanceof Collection) return collectionToJson((Collection<?>) v);
         if (v.getClass().isArray()) return arrayToJson(v);

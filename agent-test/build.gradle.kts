@@ -23,8 +23,20 @@ dependencies {
     // https://mvnrepository.com/artifact/org.springframework.boot/spring-boot-starter-web
     implementation("org.springframework.boot:spring-boot-starter-web:3.1.2")
 
+    implementation("org.springframework.boot:spring-boot-starter-jdbc:3.1.2")
+    runtimeOnly("com.h2database:h2:2.2.224")
+    runtimeOnly("com.mysql:mysql-connector-j:8.0.33")
 }
 
 tasks.test {
     useJUnitPlatform()
+}
+
+tasks.withType<JavaCompile> {
+    options.encoding = "UTF-8"
+}
+
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+    val agentJar = "${project.rootDir}/../javassist-agent/build/libs/javassist-agent-1.0-SNAPSHOT.jar"
+    jvmArgs("-javaagent:$agentJar=agent.properties")
 }

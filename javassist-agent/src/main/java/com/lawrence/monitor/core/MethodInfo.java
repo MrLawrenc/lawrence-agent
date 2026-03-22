@@ -139,7 +139,7 @@ public class MethodInfo {
                 throw new IllegalStateException("The current class cannot be interface and abstract!");
             }
             String clzName = monitor.getClass().getName();
-            String begin = clzName + " monitor = " + clzName + ".INSTANCE;\n";
+            String begin = clzName + " monitor = (" + clzName + ") com.lawrence.monitor.core.MonitorRegistry.get(" + clzName + ".class);\n";
             String statisticName = Statistics.class.getName();
             begin += statisticName + " statistic = monitor.begin($0,$args);";
 

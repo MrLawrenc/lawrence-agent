@@ -1,14 +1,13 @@
 package com.lawrence.monitor.core.impl;
 
 import com.lawrence.monitor.AgentConfig;
-import com.lawrence.monitor.statistics.JdbcStatistics;
-import com.lawrence.monitor.statistics.Statistics;
-import com.lawrence.monitor.util.StatisticsHelper;
-import com.lawrence.monitor.write.Writeable;
-import com.lawrence.monitor.write.WriterResp;
 import com.lawrence.monitor.StatisticsType;
+import com.lawrence.monitor.collect.StatisticsCollector;
 import com.lawrence.monitor.core.AbstractMonitor;
 import com.lawrence.monitor.core.MethodInfo;
+import com.lawrence.monitor.statistics.JdbcStatistics;
+import com.lawrence.monitor.statistics.Statistics;
+import com.lawrence.monitor.trace.SpanNode;
 import com.lawrence.utils.log.Logger;
 import com.lawrence.utils.log.LoggerFactory;
 import javassist.ClassPool;
@@ -16,8 +15,6 @@ import javassist.CtClass;
 import javassist.CtMethod;
 import javassist.NotFoundException;
 
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -37,34 +34,25 @@ public class JdbcMonitor extends AbstractMonitor {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(JdbcMonitor.class);
 
-    private static final String TARGET_CLZ = "com.mysql.cj.jdbc.NonRegisteringDriver";
-    /**
-     * {@link Connection}中需要代理的方法名集合
-     */
     private static final String[] PROXY_CONNECTION_METHOD = new String[]{"prepareStatement"};
-    /**
-     * {@link PreparedStatement}中需要代理的方法名集合
-     * 若执行查询时，没有使用{@link PreparedStatement#executeQuery()}方法获取查询结果，
-     * 则之后会调用{@link PreparedStatement#getResultSet()}方法获取结果集
-     */
     private static final String[] STATEMENT_METHOD = new String[]{"executeUpdate", "execute", "executeQuery", "getResultSet"};
 
-
-    private String begin = "long start = System.currentTimeMillis();" +
-            "com.github.mrlawrenc.attach.monitor.impl.JdbcMonitor collector=com.github.mrlawrenc.attach.monitor.impl.JdbcMonitor.INSTANCE;";
-
-    private String end = "java.sql.Connection result=collector.proxyConnection((java.sql.Connection)c);" +
-            "long cos = System.currentTimeMillis()-start;" +
-            "System.out.println(\"方法耗时:\"+cos);";
-
-    private String catchSrc = "{ $e.printStackTrace();" +
-            "throw $e;}";
-
-    private String finallySrc = "{Long end=System.nanoTime();\n" +
-            "System.out.println(\"finally end:\");}";
+    /** 运行时从 JdbcConfig 加载，支持同时监控多个驱动 */
+    private List<String> targetDriverClasses = Arrays.asList("com.mysql.cj.jdbc.NonRegisteringDriver");
 
     @Override
-    public void init(AgentConfig agentConfig) {
+    protected void doInit(AgentConfig agentConfig) {
+        if (agentConfig.getJdbcConfig() != null
+                && agentConfig.getJdbcConfig().getDriverClasses() != null
+                && !agentConfig.getJdbcConfig().getDriverClasses().isEmpty()) {
+            targetDriverClasses = agentConfig.getJdbcConfig().getDriverClasses();
+        }
+        LOGGER.info("JdbcMonitor targeting drivers: {}", targetDriverClasses);
+    }
+
+    @Override
+    protected Class<? extends Statistics> statisticsClass() {
+        return JdbcStatistics.class;
     }
 
     @Override
@@ -79,26 +67,26 @@ public class JdbcMonitor extends AbstractMonitor {
      * @return 代理对象
      */
     public Connection proxyConnection(Connection connection) {
-        return (Connection) Proxy.newProxyInstance(JdbcMonitor.class.getClassLoader(), new Class[]{Connection.class}, new InvocationHandler() {
-            @Override
-            public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-                JdbcStatistics statistics = null;
-                if (Arrays.asList(PROXY_CONNECTION_METHOD).contains(method.getName())) {
-                    statistics = StatisticsHelper.createStatistics(JdbcStatistics.class);
-                    statistics.setStartTime(System.currentTimeMillis());
-                }
-
-                Object result = method.invoke(connection, args);
-                if (Arrays.asList(PROXY_CONNECTION_METHOD).contains(method.getName()) && result instanceof PreparedStatement) {
-                    if (Objects.nonNull(statistics)) {
-                        statistics.setUrl(connection.getMetaData().getURL());
-                        statistics.setSql(args[0].toString());
+        return (Connection) Proxy.newProxyInstance(JdbcMonitor.class.getClassLoader(),
+                new Class[]{Connection.class}, (proxy, method, args) -> {
+                    JdbcStatistics statistics = null;
+                    if (Arrays.asList(PROXY_CONNECTION_METHOD).contains(method.getName())) {
+                        SpanNode span = trace.beginSpan(connection.getClass().getName(), method.getName());
+                        statistics = new JdbcStatistics(span.getTraceId(), span.getSpanId());
+                        statistics.setSpan(span);
+                        statistics.setStartTime(System.currentTimeMillis());
                     }
-                    result = proxyStatement((PreparedStatement) result, statistics);
-                }
-                return result;
-            }
-        });
+                    Object result = method.invoke(connection, args);
+                    if (Arrays.asList(PROXY_CONNECTION_METHOD).contains(method.getName())
+                            && result instanceof PreparedStatement) {
+                        if (Objects.nonNull(statistics)) {
+                            statistics.setUrl(connection.getMetaData().getURL());
+                            statistics.setSql(args[0].toString());
+                        }
+                        result = proxyStatement((PreparedStatement) result, statistics);
+                    }
+                    return result;
+                });
     }
 
     /**
@@ -108,81 +96,91 @@ public class JdbcMonitor extends AbstractMonitor {
      * @return 代理connection#prepareStatement()结果对象
      */
     private PreparedStatement proxyStatement(PreparedStatement statement, JdbcStatistics statistics) {
-        return (PreparedStatement) Proxy.newProxyInstance(JdbcMonitor.class.getClassLoader()
-                , new Class[]{PreparedStatement.class}, (proxy, method, args) -> {
+        return (PreparedStatement) Proxy.newProxyInstance(JdbcMonitor.class.getClassLoader(),
+                new Class[]{PreparedStatement.class}, (proxy, method, args) -> {
                     Object result = method.invoke(statement, args);
                     if (Arrays.asList(STATEMENT_METHOD).contains(method.getName())) {
-                        statistics.setEndTime(System.currentTimeMillis());
+                        statistics.finish(System.currentTimeMillis());
+                        SpanNode span = trace.endSpan();
                         if (result instanceof ResultSet) {
                             ResultSet resultSet = (ResultSet) result;
                             statistics.setResultSet(resultSet);
+                            try {
+                                resultSet.last();
+                                statistics.setCount(resultSet.getRow());
+                                resultSet.beforeFirst();
+                            } catch (Exception ignored) {
+                                // forward-only ResultSet 不支持 last()/beforeFirst()，忽略行数统计
+                            }
 
-                            //设置行数 完毕归位结果集指针
-                            resultSet.last();
-                            statistics.setCount(resultSet.getRow());
-                            resultSet.beforeFirst();
-
-                        } else if (result instanceof Integer || result instanceof Long) {
+                        } else if (result instanceof Long) {
                             statistics.setCount((Long) result);
+                        } else if (result instanceof Integer) {
+                            statistics.setCount(((Integer) result).longValue());
                         } else if (result instanceof Boolean) {
                             statistics.setSuccess((Boolean) result);
                         }
+                        StatisticsCollector.collect(statistics, span);
                     }
                     return result;
                 });
     }
 
-
     @Override
     public boolean isTarget(String className) {
-        return TARGET_CLZ.equals(className.replace("/", "."));
+        String dotName = className.replace("/", ".");
+        return targetDriverClasses.contains(dotName);
     }
 
     @Override
     public List<CtMethod> targetMethods(ClassPool pool, CtClass clz) throws NotFoundException {
-        CtMethod ctMethod = clz.getMethod("connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;");
-        return Collections.singletonList(ctMethod);
+        try {
+            CtMethod ctMethod = clz.getMethod("connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;");
+            return Collections.singletonList(ctMethod);
+        } catch (NotFoundException e) {
+            LOGGER.warn("connect() not found in {}, skipping", clz.getName());
+            return Collections.emptyList();
+        }
     }
 
     @Override
     public MethodInfo getMethodInfo(String methodName) {
         return MethodInfo.newBuilder().createBody(this, methodName);
-
-/*        return MethodInfo.newBuilder()
-                .tryBody(begin, methodName, end)
-                .catchBody(catchSrc)
-                .finallyBody(finallySrc)
-                .create();*/
     }
 
     @Override
     public Statistics begin(Object obj, Object... args) {
-        Statistics statistics = StatisticsHelper.createStatistics(JdbcStatistics.class);
-        LOGGER.debug("begin class:{} args:{}", obj.getClass(), args);
+        String driverClass = obj.getClass().getName();
+        SpanNode span = trace.beginSpan(driverClass, "connect");
+        JdbcStatistics statistics = new JdbcStatistics(span.getTraceId(), span.getSpanId());
+        statistics.setSpan(span);
+        statistics.setClassName(driverClass);
+        statistics.setMethodName("connect");
+        LOGGER.debug("begin class:{} args:{}", driverClass, args);
         statistics.setStartTime(System.currentTimeMillis());
         return statistics;
     }
 
     @Override
     public void exception(Statistics statistics, Throwable t) {
-        statistics.setT(t);
+        statistics.setError(t);
+        trace.markError();
     }
 
     @Override
-    public Object end(Statistics current, Object obj) {
-        Object result = obj;
-        if (Objects.nonNull(obj) && obj instanceof Connection) {
-            current.setOldResult(obj);
-            result = proxyConnection((Connection) current.getOldResult());
-            current.setNewResult(result);
+    protected Object doEnd(Statistics statistics, Object result) {
+        JdbcStatistics jdbc = (JdbcStatistics) statistics;
+        if (Objects.nonNull(result) && result instanceof Connection) {
+            jdbc.setOriginalConnection(result);
+            Object proxied = proxyConnection((Connection) result);
+            jdbc.setProxiedConnection(proxied);
+            return proxied;
         }
-        current.setEndTime(System.currentTimeMillis());
         return result;
     }
 
-
     @Override
-    public WriterResp write(Writeable statistics) {
-        return null;
+    protected SpanNode endSpan(Statistics statistics) {
+        return trace.endSpan();
     }
 }

@@ -1,14 +1,16 @@
 package com.lawrence.monitor;
 
 import com.lawrence.AttachMain;
-import com.lawrence.utils.log.LoggerFactory;
 import lombok.Data;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.*;
-import java.util.logging.Level;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Properties;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -20,13 +22,13 @@ import java.util.stream.Stream;
 public class AgentConfig {
     private JdbcConfig jdbcConfig;
     private ServletConfig servletConfig;
+    private LogConfig log;
+    private TimingConfig timingConfig;
 
     /**
-     * 业务级自定义监控规则
+     * 全局输出配置（适用于所有 Monitor）
      */
-    private List<ClassMatchRule> businessClassRules;
-
-    private LogConfig log;
+    private OutputConfig outputConfig;
 
     public static AgentConfig init(String agentOps) {
         if (agentOps.endsWith(".yml")) {
@@ -46,6 +48,11 @@ public class AgentConfig {
             List<String> packages = Stream.of(scanPackages.split(",")).collect(Collectors.toList());
             jdbcConfig.setScanPackages(packages);
         }
+        String driverClassesRaw = properties.getOrDefault("jdbc.driver-classes", "").toString().trim();
+        if (!driverClassesRaw.isEmpty()) {
+            jdbcConfig.setDriverClasses(Stream.of(driverClassesRaw.split(","))
+                    .map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList()));
+        }
 
         boolean servletEnable = Boolean.parseBoolean(properties.getOrDefault("servlet.enable", Boolean.FALSE.toString()).toString());
 
@@ -58,13 +65,46 @@ public class AgentConfig {
             servletConfig.setScanPackages(packages);
         }
 
+        // 解析 timing 监控配置
+        TimingConfig timingConfig = new TimingConfig();
+        boolean timingEnable = Boolean.parseBoolean(
+                properties.getOrDefault("timing.enable", Boolean.FALSE.toString()).toString());
+        timingConfig.setEnable(timingEnable);
+        String timingPackages = properties.getOrDefault("timing.packages", "").toString();
+        if (!timingPackages.trim().isEmpty()) {
+            timingConfig.setPackages(Stream.of(timingPackages.split(","))
+                    .map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList()));
+        }
+        String timingExcludePackages = properties.getOrDefault("timing.exclude-packages", "").toString();
+        if (!timingExcludePackages.trim().isEmpty()) {
+            timingConfig.setExcludePackages(Stream.of(timingExcludePackages.split(","))
+                    .map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList()));
+        }
+        agentConfig.setTimingConfig(timingConfig);
+
+        // 全局输出配置
+        OutputConfig outputConfig = new OutputConfig();
+        String outputModeRaw = properties.getOrDefault("output.mode", "CONSOLE").toString().trim();
+        Set<OutputConfig.OutputMode> modeSet = new LinkedHashSet<>();
+        for (String token : outputModeRaw.split(",")) {
+            try {
+                modeSet.add(OutputConfig.OutputMode.valueOf(token.trim().toUpperCase()));
+            } catch (IllegalArgumentException ignored) {}
+        }
+        if (modeSet.isEmpty()) modeSet.add(OutputConfig.OutputMode.CONSOLE);
+        outputConfig.setModes(modeSet);
+        String outputFile = properties.getOrDefault("output.file", "agent-output.log").toString().trim();
+        if (!outputFile.isEmpty()) {
+            outputConfig.setOutputFile(outputFile);
+        }
+        agentConfig.setOutputConfig(outputConfig);
+
         String level = properties.getProperty("log.level", "info");
         LogConfig logConfig = new LogConfig();
         logConfig.setLevel(level);
         agentConfig.setLog(logConfig);
         return agentConfig;
     }
-
 
     private static Properties parseProperties(String agentOps) {
         Properties properties = new Properties();

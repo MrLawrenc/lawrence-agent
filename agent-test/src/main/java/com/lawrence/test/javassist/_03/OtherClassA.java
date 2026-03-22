@@ -8,10 +8,12 @@ public class OtherClassA {
     }
 
     void a1() {
+        try { Thread.sleep(80); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         System.out.println("a1......");
     }
 
     void a2() {
+        try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         System.out.println("a2......");
     }
 }
