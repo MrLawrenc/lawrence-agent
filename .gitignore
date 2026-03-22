@@ -23,5 +23,8 @@
 
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
-/stackInfo.txt
-/statisticsFileInfo.txt
+**/stackInfo.txt
+**/statisticsFileInfo.txt
+**/agent-output.log
+build/
+.gradle/
