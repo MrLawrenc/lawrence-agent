@@ -1,0 +1,21 @@
+# Gradle outputs and local build state
+.gradle/
+build/
+**/build/
+
+# IDE and operating-system metadata
+.idea/
+*.iml
+.DS_Store
+
+# Local runtime state and distributable outputs
+agent-monitor.pid
+agent-monitor.zip
+app/
+*.log
+*.hprof
+*.jfr
+
+# Keep the Gradle Wrapper JAR versioned; all other packaged artifacts are generated.
+*.jar
+!gradle/wrapper/gradle-wrapper.jar

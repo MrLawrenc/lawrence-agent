@@ -1,0 +1,144 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'org.openjfx.javafxplugin' version '0.1.0'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+dependencies {
+    implementation project(':monitor-model')
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
+    implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.16.1'
+    implementation 'io.netty:netty-codec:4.1.135.Final'
+    implementation 'io.netty:netty-handler:4.1.135.Final'
+    implementation 'io.netty:netty-transport:4.1.135.Final'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+}
+
+javafx {
+    version = '21'
+    modules = ['javafx.controls', 'javafx.fxml', 'javafx.graphics', 'javafx.base']
+}
+
+application {
+    mainClass = 'com.agentmonitor.app.MainApp'
+    applicationDefaultJvmArgs = [
+        "-Xdock:icon=${projectDir}/src/main/resources/com/agentmonitor/app/icon.icns",
+        '-Xdock:name=Agent Monitor',
+        '--add-modules', 'jdk.attach',
+        '--add-opens', 'java.base/java.lang=ALL-UNNAMED'
+    ]
+}
+
+processResources {
+    from(project(':monitor-agent').tasks.named('agentJar')) {
+        into 'agent'
+        // Keep the embedded Agent as an opaque resource.  Shadow treats nested *.jar files as
+        // dependency archives and omits them from the final App archive.
+        rename { 'monitor-agent.agent' }
+    }
+}
+
+shadowJar {
+    archiveClassifier.set('all')
+    dependsOn processResources
+    manifest {
+        attributes('Main-Class': 'com.agentmonitor.app.MainApp')
+    }
+    mergeServiceFiles()
+}
+
+// A Gradle distribution is a Unix launcher, so Finder has no application bundle from which to
+// obtain an icon. Package a real macOS .app with the same icon used by the development launcher.
+def macIcon = layout.projectDirectory.file('src/main/resources/com/agentmonitor/app/icon.icns')
+def macAppOutput = layout.buildDirectory.dir('jpackage')
+def windowsIcon = layout.projectDirectory.file('src/main/resources/com/agentmonitor/app/icon.ico')
+def windowsAppOutput = layout.buildDirectory.dir('jpackage')
+
+tasks.register('packageMacApp', Exec) {
+    group = 'distribution'
+    description = 'Builds a native macOS .app bundle with the Agent Monitor icon.'
+    dependsOn tasks.named('installDist')
+    inputs.file(macIcon)
+    outputs.dir(macAppOutput)
+
+    doFirst {
+        if (!System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('mac')) {
+            throw new GradleException('packageMacApp can run only on macOS')
+        }
+        File inputDirectory = layout.buildDirectory.dir('install/monitor-app/lib').get().asFile
+        File jdkModules = new File(System.getProperty('java.home'), 'jmods')
+        List<File> javafxModules = inputDirectory.listFiles().findAll { file ->
+            file.name.startsWith('javafx-') && file.name.endsWith('.jar')
+        }
+        if (!jdkModules.isDirectory() || javafxModules.isEmpty()) {
+            throw new GradleException('无法定位打包 JavaFX runtime 所需的 JDK 或 JavaFX 模块')
+        }
+        File destination = macAppOutput.get().asFile
+        project.delete(destination)
+        destination.mkdirs()
+        String modulePath = ([jdkModules] + javafxModules)*.absolutePath.join(File.pathSeparator)
+        commandLine 'jpackage',
+                '--type', 'app-image',
+                '--name', 'Agent Monitor',
+                '--app-version', project.version == 'unspecified' ? '1.0.0' : project.version.toString(),
+                '--input', inputDirectory.absolutePath,
+                '--main-jar', 'monitor-app.jar',
+                '--main-class', application.mainClass.get(),
+                '--dest', destination.absolutePath,
+                '--icon', macIcon.asFile.absolutePath,
+                '--mac-package-identifier', 'com.agentmonitor.app',
+                '--module-path', modulePath,
+                // The packaged runtime is trimmed by jpackage.  Besides JavaFX and Attach,
+                // Netty needs java.logging and the metrics client needs the local JMX/RMI stack.
+                '--add-modules', 'javafx.controls,javafx.fxml,javafx.graphics,javafx.base,jdk.attach,java.logging,java.management,java.management.rmi,java.naming,java.rmi,jdk.management.agent',
+                '--java-options', '--add-modules=jdk.attach',
+                '--java-options', '--add-opens=java.base/java.lang=ALL-UNNAMED'
+    }
+}
+
+// jpackage generates native launchers only for the operating system on which it is run.
+// Run this task on Windows (for example via package-win.sh in Git Bash) to produce the .exe.
+tasks.register('packageWindowsApp', Exec) {
+    group = 'distribution'
+    description = 'Builds a native Windows app-image with the Agent Monitor icon.'
+    dependsOn tasks.named('installDist')
+    inputs.file(windowsIcon)
+    outputs.dir(windowsAppOutput)
+
+    doFirst {
+        if (!System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')) {
+            throw new GradleException('packageWindowsApp can run only on Windows')
+        }
+        File inputDirectory = layout.buildDirectory.dir('install/monitor-app/lib').get().asFile
+        File jdkModules = new File(System.getProperty('java.home'), 'jmods')
+        List<File> javafxModules = inputDirectory.listFiles().findAll { file ->
+            file.name.startsWith('javafx-') && file.name.endsWith('.jar')
+        }
+        if (!jdkModules.isDirectory() || javafxModules.isEmpty()) {
+            throw new GradleException('无法定位打包 JavaFX runtime 所需的 JDK 或 JavaFX 模块')
+        }
+        File destination = windowsAppOutput.get().asFile
+        project.delete(destination)
+        destination.mkdirs()
+        String modulePath = ([jdkModules] + javafxModules)*.absolutePath.join(File.pathSeparator)
+        commandLine 'jpackage',
+                '--type', 'app-image',
+                '--name', 'Agent Monitor',
+                '--app-version', project.version == 'unspecified' ? '1.0.0' : project.version.toString(),
+                '--input', inputDirectory.absolutePath,
+                '--main-jar', 'monitor-app.jar',
+                '--main-class', application.mainClass.get(),
+                '--dest', destination.absolutePath,
+                '--icon', windowsIcon.asFile.absolutePath,
+                '--module-path', modulePath,
+                // Keep the Windows runtime aligned with macOS so monitoring can start there too.
+                '--add-modules', 'javafx.controls,javafx.fxml,javafx.graphics,javafx.base,jdk.attach,java.logging,java.management,java.management.rmi,java.naming,java.rmi,jdk.management.agent',
+                '--java-options', '--add-modules=jdk.attach',
+                '--java-options', '--add-opens=java.base/java.lang=ALL-UNNAMED'
+    }
+}
