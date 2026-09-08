@@ -1,0 +1,110 @@
+# Agent Monitor 配置示例（schema v2）。此文件可直接导入 App。
+# App 会自动填充本机 Netty Collector 的 host / port；netty 同时承担实时 Span
+# 传输与 STOP 后的字节码还原确认，因此 output.exporters 必须保留 netty。
+#
+# 配置格式版本；当前仅支持 2。
+version: 2
+
+# 监控范围：仅匹配这里指定的业务包，再应用下面的排除规则。
+scope:
+  # 要插桩的 Java 包前缀列表；与 includeClasses 至少配置一项，建议只填写具体业务包，避免框架和公共库产生噪音。
+  includePackages:
+    - com.example.application
+    - com.example.domain
+  # 要精确插桩的完整 JVM 类名白名单；不支持通配符，内部类使用 $；可单独使用或与 includePackages 叠加。
+  # 仅需监控一个类时，将 includePackages 改为 []，并在这里填写该类的完整名称。
+  includeClasses: []
+  # 排除的类/包通配规则；仅支持 cls:（类名）或 pkg:（包名）前缀，* 匹配任意字符。
+  # 显式写成 [] 表示不排除任何类或包；省略此项时使用 App 的默认排除规则。
+  excludeConditions:
+    - cls:*DTO
+    - cls:*VO
+    - cls:*Entity
+    - cls:*Config
+  # 排除的方法名通配规则；例如 get* 会忽略所有 getter，避免简单访问器淹没调用树。
+  # 显式写成 [] 表示不排除方法；省略此项时使用 App 的默认排除规则。
+  excludeMethods:
+    - get*
+    - is*
+    - set*
+    - toString
+    - hashCode
+    - equals
+
+# 采样策略：头采样决定是否实时导出；未命中的链路再由尾采样判定是否保留。
+sampling:
+  # 根 Trace 的即时采集比例（0-100）。100 表示所有链路实时导出，不经过尾采样缓冲；
+  # 业务、HTTP、JDBC 子 Span 继承同一决定。
+  ratePercent: 10
+  # 未命中头采样时，根调用耗时达到此毫秒数即保留整条链路；任一 Span 出错也会保留。
+  # 0 表示不以耗时为条件保留，只有出错链路会被尾采样保留。
+  tailCaptureThresholdMs: 50
+  # 每条尾采样链路在根调用结束前可暂存的 Span 数量上限；只影响未命中头采样的链路，必须大于 0。
+  tailMaxBufferedSpans: 512
+  # 每条尾采样链路可暂存的参数、返回值和 SQL 等内容总大小上限（MiB），必须大于 0。
+  tailMaxBufferedSizeMb: 1
+  # 暂存达到任一上限时的处理方式：promote 立即导出已暂存部分，并将后续 Span 改为实时导出；
+  # drop 丢弃整条超限链路。推荐使用 promote，避免丢失完整调用链。
+  tailOverflowPolicy: promote
+
+# 输出与本地文件保留策略。
+output:
+  # 采集会话根目录；每次采集会在其下创建 <timestamp>/session-<id>/。支持 ~。
+  sessionRootDir: "~/Downloads/agent-monitor-captures"
+  # Span 导出端列表；必须包含 netty（实时数据与停止控制通道），file 用于本地离线复盘。
+  exporters: [netty, file]
+  # 控制 Span 中是否记录原始诊断值；关闭可降低数据量并减少敏感数据暴露。
+  capture:
+    # 是否记录方法入参；关闭可降低数据量并减少敏感数据暴露。
+    arguments: true
+    # 是否记录方法正常返回值；关闭可降低数据量并减少敏感数据暴露。
+    returnValue: true
+    # 是否记录 JDBC SQL 绑定参数；关闭可降低数据量并减少敏感数据暴露。
+    sqlParameters: true
+  # file exporter 生成的 Span 文件滚动策略。
+  spanFiles:
+    # 单个 Span 文件达到此大小（MiB）后滚动，必须大于 0。
+    rotateSizeMb: 100
+    # 单个 Span 文件写入达到此分钟数后滚动，必须大于 0。
+    rotateMinutes: 10
+    # 是否将已滚动的 Span 文件压缩为 gzip；节省空间但离线查看时需要解压。
+    compress: false
+  # 本地采集会话保留策略。
+  retention:
+    # 最多保留的历史会话数；0 表示不按会话数量自动清理。
+    maxSessions: 0
+
+# 可选：为被监控 JVM 覆盖服务身份。不需要时可保持整段注释；空字段不会写入保存后的配置。
+# resource:
+#   # 服务名称，例如 gi-policy-service。
+#   serviceName: gi-policy-service
+#   # 服务版本，例如发布版本号或 Git tag。
+#   serviceVersion: 2026.08.26
+#   # 部署环境，例如 dev、test、staging 或 prod。
+#   deploymentEnvironment: test
+
+# 外部依赖调用采集开关。
+dependencies:
+  # 是否采集 JDBC 调用及 SQL Span。
+  jdbc: true
+  # 是否采集 HTTP 客户端调用 Span。
+  http: true
+
+# 离线链路分析与瓶颈识别策略。
+analysis:
+  # 是否在会话结束后生成离线分析结果。
+  enabled: true
+  # 根链路总耗时达到此毫秒数时标记为慢链路，必须大于 0。
+  slowTraceThresholdMs: 3000
+  # 单个 Span 总耗时达到此毫秒数时标记为慢调用，必须大于 0。
+  slowSpanThresholdMs: 800
+  # Span 自身耗时（不含子调用）达到此毫秒数时标记为瓶颈，必须大于 0。
+  slowSelfTimeThresholdMs: 300
+  # 是否将包含异常的链路纳入分析，即使其未达到慢链路阈值。
+  includeErrorTrace: true
+  # 每个根方法最多保留多少条分析样本，避免同一入口占用过多结果，必须大于 0。
+  maxTracesPerRootMethod: 20
+  # 每条链路最多输出多少个瓶颈 Span，必须大于 0。
+  maxBottlenecksPerTrace: 5
+  # 分析调用树时允许遍历的最大层级，超过部分不再展开，必须大于 0。
+  maxDepth: 50

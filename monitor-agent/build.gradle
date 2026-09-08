@@ -1,0 +1,104 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+/**
+ * The artifact passed to VirtualMachine.loadAgent must stay deliberately small.  The JVM adds
+ * that JAR to the system loader's search path before invoking Agent-Class, so putting the Agent
+ * core (or its third-party dependencies) in it defeats class-loader isolation.
+ *
+ * Layout of monitor-agent.jar:
+ *   - AgentBootstrap only (system / attach loader)
+ *   - agent/monitor-bootstrap-bridge.jar (appended to Bootstrap)
+ *   - agent/monitor-agent-core.jar (loaded by an agent-first URLClassLoader)
+ */
+sourceSets {
+    bootstrap {
+        java.srcDir 'src/bootstrap/java'
+        resources.srcDir 'src/bootstrap/resources'
+    }
+}
+
+dependencies {
+    implementation project(':monitor-model')
+    implementation 'net.bytebuddy:byte-buddy:1.14.12'
+    implementation 'io.netty:netty-codec:4.1.135.Final'
+    implementation 'io.netty:netty-handler:4.1.135.Final'
+    implementation 'io.netty:netty-transport:4.1.135.Final'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+
+// Core code compiles against the tiny bridge, but the bridge is intentionally not copied into
+// the core JAR.  At runtime its defining loader is Bootstrap.
+tasks.named('compileJava') {
+    dependsOn tasks.named('bootstrapClasses')
+    classpath += files(sourceSets.bootstrap.output)
+}
+
+tasks.named('compileTestJava') {
+    dependsOn tasks.named('bootstrapClasses')
+    classpath += files(sourceSets.bootstrap.output)
+}
+
+sourceSets.test.runtimeClasspath += sourceSets.bootstrap.output
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    dependsOn tasks.named('agentJar')
+}
+
+// This is the isolated runtime payload.  It contains all Agent implementation classes and all
+// third-party dependencies, but no bootstrap bridge or attach entry classes.
+shadowJar {
+    archiveBaseName.set('monitor-agent-core')
+    archiveClassifier.set('')
+    archiveVersion.set('')
+    exclude 'com/agentmonitor/bootstrap/**'
+    mergeServiceFiles()
+}
+
+tasks.register('bootstrapBridgeJar', Jar) {
+    dependsOn tasks.named('bootstrapClasses')
+    archiveBaseName.set('monitor-bootstrap-bridge')
+    archiveClassifier.set('')
+    archiveVersion.set('')
+    destinationDirectory.set(layout.buildDirectory.dir('agent-artifacts'))
+    from(sourceSets.bootstrap.output) {
+        include 'com/agentmonitor/bootstrap/bridge/**'
+    }
+}
+
+// The outer Agent JAR is intentionally not a Shadow JAR: embedding a fat runtime here would
+// make it visible to the target JVM's system loader.
+tasks.register('agentJar', Jar) {
+    dependsOn tasks.named('bootstrapClasses'), tasks.named('bootstrapBridgeJar'), tasks.named('shadowJar')
+    archiveBaseName.set('monitor-agent')
+    archiveClassifier.set('')
+    archiveVersion.set('')
+    destinationDirectory.set(layout.buildDirectory.dir('libs'))
+
+    from(sourceSets.bootstrap.output) {
+        include 'com/agentmonitor/bootstrap/entry/**'
+    }
+    from(tasks.named('bootstrapBridgeJar').flatMap { it.archiveFile }) {
+        into 'agent'
+        rename { 'monitor-bootstrap-bridge.jar' }
+    }
+    from(tasks.named('shadowJar').flatMap { it.archiveFile }) {
+        into 'agent'
+        rename { 'monitor-agent-core.jar' }
+    }
+    manifest {
+        attributes(
+            'Premain-Class'                : 'com.agentmonitor.bootstrap.entry.AgentBootstrap',
+            'Agent-Class'                  : 'com.agentmonitor.bootstrap.entry.AgentBootstrap',
+            'Can-Retransform-Classes'      : 'true',
+            'Can-Redefine-Classes'         : 'true',
+            'Can-Set-Native-Method-Prefix' : 'true'
+        )
+    }
+}
+
+jar.enabled = false
+build.dependsOn tasks.named('agentJar')
