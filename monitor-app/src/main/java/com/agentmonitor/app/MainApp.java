@@ -9,6 +9,11 @@ import com.agentmonitor.app.util.AppLog;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.scene.Scene;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.layout.VBox;
+import javafx.geometry.Pos;
+import com.agentmonitor.app.ui.UiIcons;
 import javafx.stage.Stage;
 
 public class MainApp extends Application {
@@ -30,10 +35,18 @@ public class MainApp extends Application {
             if (controller != null) controller.onWindowClose();
         });
 
-        javafx.scene.control.Label placeholder = new javafx.scene.control.Label("请选择目标 JVM 进程...");
-        placeholder.setStyle("-fx-text-fill:#64748B; -fx-font-size:18px;");
-        targetSelectionPlaceholder = new javafx.scene.layout.StackPane(placeholder);
-        targetSelectionPlaceholder.setStyle("-fx-background-color:#F8FAFC;");
+        Label title = new Label("连接你的 Java 应用");
+        title.getStyleClass().add("welcome-title");
+        Label description = new Label("选择本机 JVM，配置监控范围，查看方法耗时与调用链。");
+        description.getStyleClass().add("hint-label");
+        Button select = new Button("选择 JVM 进程");
+        select.getStyleClass().add("primary-btn");
+        UiIcons.decorate(select, "arrow");
+        select.setOnAction(e -> showSelectDialog());
+        VBox welcome = new VBox(16, UiIcons.icon("monitor"), title, description, select);
+        welcome.setAlignment(Pos.CENTER);
+        targetSelectionPlaceholder = new javafx.scene.layout.StackPane(welcome);
+        targetSelectionPlaceholder.getStyleClass().add("root-pane");
 
         mainScene = new Scene(targetSelectionPlaceholder, 1520, 820);
         mainScene.getStylesheets().add(

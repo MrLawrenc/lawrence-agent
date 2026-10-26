@@ -25,6 +25,9 @@ public final class SpanContext {
     public final Map<String, String> attributes;
     /** Shared root-level sampling decision and optional tail buffer for this whole trace. */
     public final TraceSamplingState traceSampling;
+    public final InFlightSpans.Ticket invocation;
+    public long observerNanosAtStart;
+    public long entryOverheadNanos;
 
     public SpanContext(String traceId, String spanId, String parentSpanId,
                        String className, String methodName, String threadName,
@@ -46,6 +49,15 @@ public final class SpanContext {
                        String className, String methodName, String threadName,
                        int depth, long startNanos, long startedAtEpochMillis, String arguments,
                        SpanKind kind, Map<String, String> attributes, TraceSamplingState traceSampling) {
+        this(traceId, spanId, parentSpanId, className, methodName, threadName, depth, startNanos,
+                startedAtEpochMillis, arguments, kind, attributes, traceSampling, null);
+    }
+
+    public SpanContext(String traceId, String spanId, String parentSpanId,
+                       String className, String methodName, String threadName,
+                       int depth, long startNanos, long startedAtEpochMillis, String arguments,
+                       SpanKind kind, Map<String, String> attributes, TraceSamplingState traceSampling,
+                       InFlightSpans.Ticket invocation) {
         this.traceId = traceId;
         this.spanId = spanId;
         this.parentSpanId = parentSpanId;
@@ -59,5 +71,7 @@ public final class SpanContext {
         this.kind = kind == null ? SpanKind.BUSINESS : kind;
         this.attributes = Map.copyOf(attributes == null ? Map.of() : attributes);
         this.traceSampling = traceSampling == null ? new TraceSamplingState(true, 0) : traceSampling;
+        this.invocation = invocation;
+        this.observerNanosAtStart = this.traceSampling.observerNanos();
     }
 }

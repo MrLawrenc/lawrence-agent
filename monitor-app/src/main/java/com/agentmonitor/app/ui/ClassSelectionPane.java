@@ -51,6 +51,8 @@ import javafx.scene.control.cell.CheckBoxTableCell;
 import javafx.scene.control.cell.CheckBoxTreeCell;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.FlowPane;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
@@ -143,7 +145,7 @@ public class ClassSelectionPane extends SplitPane {
             }
         });
         packageTree.getStyleClass().add("package-tree");
-        packageTree.setMinWidth(260);
+        packageTree.setMinWidth(220);
         packageTree.setPrefWidth(300);
 
         VBox left = buildScopePanel();
@@ -175,7 +177,7 @@ public class ClassSelectionPane extends SplitPane {
     }
 
     private VBox buildScopePanel() {
-        packageSearchField.setPromptText("搜索包名，命中节点会自动展开");
+        packageSearchField.setPromptText("搜索包名，自动展开匹配项");
         packageSearchField.getStyleClass().add("search-field");
         packageSearchField.textProperty().addListener((obs, old, now) -> {
             if (!treeUpdating) buildPackageTree();
@@ -188,7 +190,7 @@ public class ClassSelectionPane extends SplitPane {
         VBox.setVgrow(treeWrap, Priority.ALWAYS);
 
         VBox left = new VBox(10,
-                section("搜索包"),
+                section("业务包"),
                 packageSearchField,
                 treeWrap);
         left.getStyleClass().add("package-panel");
@@ -217,19 +219,19 @@ public class ClassSelectionPane extends SplitPane {
     }
 
     private VBox buildClassHeader() {
-        Label title = new Label("Matching Results");
+        Label title = new Label("监控范围");
         title.getStyleClass().add("card-title");
-        Label subtitle = new Label("All classes selected by default. Unchecking means exclusion.");
+        Label subtitle = new Label("勾选要监控的类；取消勾选即可排除。");
         subtitle.getStyleClass().add("hint-label");
         classSearchField.setPromptText("搜索类名 / 包名");
         classSearchField.getStyleClass().add("search-field");
         classSearchField.textProperty().addListener((obs, old, now) -> refreshVisibleRows());
 
-        Button selectAll = new Button("本页包含");
+        Button selectAll = new Button("包含本页");
         selectAll.getStyleClass().add("ghost-btn");
         selectAll.setOnAction(e -> setVisibleRowsIncluded(true));
 
-        Button invert = new Button("本页反选");
+        Button invert = new Button("反选本页");
         invert.getStyleClass().add("ghost-btn");
         invert.setOnAction(e -> invertVisibleRowsIncluded());
 
@@ -243,9 +245,12 @@ public class ClassSelectionPane extends SplitPane {
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox tools = new HBox(8, classSearchField, spacer, classExclude, methodExclude, selectAll, invert);
+        classSearchField.setMaxWidth(Double.MAX_VALUE);
+        FlowPane tools = new FlowPane(6, 6, classExclude, methodExclude, selectAll, invert);
         tools.setAlignment(Pos.CENTER_LEFT);
-        HBox.setHgrow(classSearchField, Priority.ALWAYS);
+        tools.setPrefWrapLength(420);
+        classExclude.setTooltip(new Tooltip("按类名、注解或类型配置排除规则"));
+        methodExclude.setTooltip(new Tooltip("配置需要跳过的方法名称与匹配规则"));
         previousPageButton.getStyleClass().add("class-page-btn");
         nextPageButton.getStyleClass().add("class-page-btn");
         previousPageButton.setOnAction(e -> changePage(-1));
@@ -261,7 +266,7 @@ public class ClassSelectionPane extends SplitPane {
         HBox.setHgrow(footerSpacer, Priority.ALWAYS);
         HBox footer = new HBox(8, classSummaryLabel, footerSpacer, pageControls);
         footer.setAlignment(Pos.CENTER_LEFT);
-        return new VBox(6, title, subtitle, tools, footer);
+        return new VBox(8, title, subtitle, classSearchField, tools, footer);
     }
 
     /** Loads the Agent's completed attach-time result without blocking the JavaFX event thread. */
@@ -378,6 +383,12 @@ public class ClassSelectionPane extends SplitPane {
     private void buildClassTable() {
         classTable.getStyleClass().add("class-table");
         classTable.setEditable(true);
+        Label emptyTitle = label("暂无匹配的类", "empty-state-title");
+        Label emptyHint = label("选择左侧业务包，或调整搜索条件。", "hint-label");
+        emptyHint.setWrapText(true);
+        VBox empty = new VBox(8, emptyTitle, emptyHint);
+        empty.setAlignment(Pos.CENTER);
+        classTable.setPlaceholder(empty);
         classTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
 
         TableColumn<ClassRow, Boolean> includedCol = new TableColumn<>("");
@@ -577,6 +588,7 @@ public class ClassSelectionPane extends SplitPane {
                     item.setExpanded(!needle.isEmpty());
                     nodes.put(path, item);
                     parent.getChildren().add(item);
+                    if (item.isSelected()) revealParents(item);
                     final CheckBoxTreeItem<String> treeItem = item;
                     item.selectedProperty().addListener((obs, old, selected) -> {
                         if (treeUpdating) return;
@@ -600,6 +612,7 @@ public class ClassSelectionPane extends SplitPane {
         packageTree.refresh();
         CheckBoxTreeItem<String> target = restoreItem != null ? restoreItem : firstHit;
         if (target != null) {
+            revealParents(target);
             packageTree.getSelectionModel().select(target);
             Platform.runLater(() -> {
                 int row = packageTree.getRow(target);
@@ -670,6 +683,7 @@ public class ClassSelectionPane extends SplitPane {
                 item.setSelected(node.selected);
                 item.setExpanded(!needle.isEmpty());
                 parent.getChildren().add(item);
+                if (node.selected) revealParents(item);
                 nodes.put(node.path, item);
                 item.selectedProperty().addListener((obs, old, selected) -> {
                     if (!treeUpdating) handlePackageSelection(treeItemPath(item), selected);
@@ -684,6 +698,7 @@ public class ClassSelectionPane extends SplitPane {
             rootItem.setExpanded(true);
             CheckBoxTreeItem<String> target = restoreItem[0] != null ? restoreItem[0] : firstHit[0];
             if (target != null) {
+                revealParents(target);
                 packageTree.getSelectionModel().select(target);
                 Platform.runLater(() -> {
                     int row = packageTree.getRow(target);
@@ -696,6 +711,12 @@ public class ClassSelectionPane extends SplitPane {
         }));
         packageTreeBuildTimeline.setCycleCount(Timeline.INDEFINITE);
         packageTreeBuildTimeline.play();
+    }
+
+    private static void revealParents(TreeItem<?> item) {
+        for (TreeItem<?> parent = item.getParent(); parent != null; parent = parent.getParent()) {
+            parent.setExpanded(true);
+        }
     }
 
     private String currentSelectedPackagePath() {

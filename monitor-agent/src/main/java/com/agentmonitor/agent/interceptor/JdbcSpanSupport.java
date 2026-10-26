@@ -11,6 +11,7 @@ import java.util.WeakHashMap;
 
 import com.agentmonitor.model.span.SpanAttribute;
 import com.agentmonitor.model.span.SpanKind;
+import com.agentmonitor.agent.protocol.SpanPayloadLimits;
 
 /**
  * JDBC-only collection based on {@link Connection} and {@link Statement}.  No driver, pool, ORM,
@@ -29,9 +30,9 @@ public final class JdbcSpanSupport {
 
     /** Records the SQL template when a standard JDBC Connection creates a Statement. */
     public static void onStatementCreated(String methodName, Object connection, Object[] arguments, Object result) {
-        if (!ENABLED || !MethodSpanAdvice.ACTIVE || result == null) return;
+        if (!ENABLED || !MethodSpanAdvice.ACTIVE || ValueCapture.active() || result == null) return;
         String sql = isPreparedStatementMethod(methodName) ? firstSql(arguments) : "";
-        String datasource = datasourceName(connection);
+        String datasource = ValueCapture.suppress(() -> datasourceName(connection));
         synchronized (STATEMENTS) {
             StatementState state = STATEMENTS.computeIfAbsent(result, ignored -> new StatementState());
             if (!sql.isBlank()) state.sql = normalizeSql(sql);
@@ -41,7 +42,20 @@ public final class JdbcSpanSupport {
 
     /** Handles parameter binding, batch lifecycle, and SQL execution from one JDBC Statement. */
     public static Context enter(String methodName, Object statement, Object[] arguments) {
-        if (!ENABLED || !MethodSpanAdvice.ACTIVE || statement == null) return null;
+        if (!ENABLED || !MethodSpanAdvice.ACTIVE || ValueCapture.active() || statement == null) return null;
+        long observerStarted = System.nanoTime();
+        SpanContext owner = MethodSpanAdvice.SPAN_STACK.get().peek();
+        Context result = null;
+        try {
+            result = enterInternal(methodName, statement, arguments);
+            return result;
+        } finally {
+            if (result != null && result.span != null) MethodSpanAdvice.recordEntryOverhead(result.span, observerStarted);
+            else if (owner != null) MethodSpanAdvice.recordExitOverhead(owner, observerStarted);
+        }
+    }
+
+    private static Context enterInternal(String methodName, Object statement, Object[] arguments) {
         String method = methodName == null ? "" : methodName;
         if (isParameterSetter(method, arguments)) {
             return CAPTURE_PARAMETERS
@@ -49,7 +63,8 @@ public final class JdbcSpanSupport {
                     : null;
         }
         if ("clearParameters".equals(method)) return CAPTURE_PARAMETERS ? Context.clearParameters(statement) : null;
-        if ("addBatch".equals(method)) return CAPTURE_PARAMETERS ? Context.addBatch(statement) : null;
+        if ("addBatch".equals(method)) return Context.addBatch(statement);
+        if ("clearBatch".equals(method)) return Context.clearBatch(statement);
         if ("close".equals(method)) return Context.close(statement);
         if (!isExecutionMethod(method)) return null;
 
@@ -59,33 +74,52 @@ public final class JdbcSpanSupport {
         SpanContext parent = MethodSpanAdvice.SPAN_STACK.get().peek();
         if (parent == null || parent.kind == SpanKind.SQL) return null;
 
-        StatementSnapshot snapshot = snapshot(statement, arguments);
-        if (snapshot.sql.isBlank()) return null;
-        long startedAt = System.currentTimeMillis();
-        SpanContext span = new SpanContext(parent.traceId, MethodSpanAdvice.nextId(), parent.spanId,
-                "JDBC", sqlType(snapshot.sql), Thread.currentThread().getName(), parent.depth + 1,
-                System.nanoTime(), startedAt, "", SpanKind.SQL, sqlAttributes(snapshot), parent.traceSampling);
-        MethodSpanAdvice.SPAN_STACK.get().push(span);
-        return Context.execution(span, statement, new LinkedHashMap<>(span.attributes));
+        InFlightSpans.Ticket invocation = InFlightSpans.enter(false);
+        if (invocation == null) return null;
+        try {
+            boolean batchExecution = "executeBatch".equals(method) || "executeLargeBatch".equals(method);
+            StatementSnapshot snapshot = snapshot(statement, arguments, batchExecution);
+            if (snapshot.sql.isBlank()) { invocation.close(); return null; }
+            Map<String, String> attributes = SpanPayloadLimits.attributes(sqlAttributes(snapshot));
+            long startedAt = System.currentTimeMillis();
+            SpanContext span = new SpanContext(parent.traceId, MethodSpanAdvice.nextId(), parent.spanId,
+                    "JDBC", sqlType(snapshot.sql), Thread.currentThread().getName(), parent.depth + 1,
+                    System.nanoTime(), startedAt, "", SpanKind.SQL, attributes, parent.traceSampling, invocation);
+            MethodSpanAdvice.SPAN_STACK.get().push(span);
+            return Context.execution(span, statement, new LinkedHashMap<>(span.attributes), batchExecution);
+        } catch (Throwable error) {
+            invocation.close();
+            throw error;
+        }
     }
 
     /** Applies successful statement mutations and exports a completed execution span. */
     public static void exit(Context context, Throwable error) {
         if (context == null) return;
-        switch (context.operation) {
-            case PARAMETER -> {
-                if (error == null) putParameter(context.statement, context.parameterIndex, context.parameterValue);
+        long observerStarted = System.nanoTime();
+        SpanContext owner = context.span != null ? context.span : MethodSpanAdvice.SPAN_STACK.get().peek();
+        try {
+            switch (context.operation) {
+                case PARAMETER -> {
+                    if (error == null) putParameter(context.statement, context.parameterIndex, context.parameterValue);
+                }
+                case CLEAR_PARAMETERS -> {
+                    if (error == null) clearParameters(context.statement);
+                }
+                case CLEAR_BATCH -> {
+                    if (error == null) clearBatches(context.statement);
+                }
+                case ADD_BATCH -> {
+                    if (error == null) addBatch(context.statement);
+                }
+                case CLOSE -> {
+                    if (error == null) forget(context.statement);
+                }
+                case EXECUTION -> completeExecution(context, error, observerStarted);
             }
-            case CLEAR_PARAMETERS -> {
-                if (error == null) clearParameters(context.statement);
-            }
-            case ADD_BATCH -> {
-                if (error == null) addBatch(context.statement);
-            }
-            case CLOSE -> {
-                if (error == null) forget(context.statement);
-            }
-            case EXECUTION -> completeExecution(context, error);
+        } finally {
+            if (owner != null) MethodSpanAdvice.recordExitOverhead(owner, observerStarted);
+            if (context.span != null && context.span.invocation != null) context.span.invocation.close();
         }
     }
 
@@ -101,24 +135,24 @@ public final class JdbcSpanSupport {
         }
     }
 
-    private static void completeExecution(Context context, Throwable error) {
+    private static void completeExecution(Context context, Throwable error, long ended) {
+        long duration = MethodSpanAdvice.durationNanos(context.span, ended);
         MethodSpanAdvice.removeContext(context.span);
-        clearBatches(context.statement);
-        long duration = Math.max(0, System.nanoTime() - context.span.startNanos);
+        if (context.batchExecution) clearBatches(context.statement);
         MethodSpanAdvice.complete(context.span, MethodSpanAdvice.completedSpan(context.span, "", duration,
                 error, "", context.attributes));
     }
 
-    private static StatementSnapshot snapshot(Object statement, Object[] arguments) {
+    private static StatementSnapshot snapshot(Object statement, Object[] arguments, boolean batchExecution) {
         String directSql = firstSql(arguments);
         synchronized (STATEMENTS) {
             StatementState state = STATEMENTS.computeIfAbsent(statement, ignored -> new StatementState());
             String sql = directSql.isBlank() ? state.sql : normalizeSql(directSql);
             if (!directSql.isBlank()) state.sql = sql;
-            if (state.datasource.isBlank()) state.datasource = datasourceFromStatement(statement);
-            List<Map<Integer, String>> batches = copyBatches(state.batches);
+            if (state.datasource.isBlank()) state.datasource = ValueCapture.suppress(() -> datasourceFromStatement(statement));
+            List<Map<Integer, String>> batches = batchExecution ? copyBatches(state.batches) : List.of();
             Map<Integer, String> parameters = new LinkedHashMap<>(state.parameters);
-            return new StatementSnapshot(sql, state.datasource, parameters, batches);
+            return new StatementSnapshot(sql, state.datasource, parameters, batches, batchExecution ? state.batchCount : 0);
         }
     }
 
@@ -132,8 +166,12 @@ public final class JdbcSpanSupport {
         values.put(SpanAttribute.DB_QUERY_TEXT, snapshot.sql);
         values.put(SpanAttribute.DB_OPERATION_NAME, operation);
         values.put(SpanAttribute.DB_QUERY_SUMMARY, querySummary(snapshot.sql, operation));
-        if (!snapshot.batches.isEmpty()) {
-            values.put(SpanAttribute.DB_OPERATION_BATCH_SIZE, String.valueOf(snapshot.batches.size()));
+        if (snapshot.batchCount > 0) {
+            values.put(SpanAttribute.DB_OPERATION_BATCH_SIZE, String.valueOf(snapshot.batchCount));
+            values.put(SpanAttribute.BATCH_PARAMETER_SAMPLES, String.valueOf(snapshot.batches.size()));
+            if (CAPTURE_PARAMETERS && snapshot.batchCount > snapshot.batches.size()) {
+                values.put(SpanAttribute.BATCH_PARAMETERS_TRUNCATED, "true");
+            }
         }
         DatabaseTarget database = databaseTarget(snapshot.datasource);
         if (!database.safeUrl.isBlank()) values.put(SpanAttribute.DATASOURCE_NAME, database.safeUrl);
@@ -167,15 +205,18 @@ public final class JdbcSpanSupport {
     private static void addBatch(Object statement) {
         synchronized (STATEMENTS) {
             StatementState state = STATEMENTS.computeIfAbsent(statement, ignored -> new StatementState());
-            if (state.batches.size() == MAX_BATCHES) state.batches.remove(0);
-            state.batches.add(new LinkedHashMap<>(state.parameters));
+            state.batchCount++;
+            if (CAPTURE_PARAMETERS) {
+                if (state.batches.size() == MAX_BATCHES) state.batches.remove(0);
+                state.batches.add(new LinkedHashMap<>(state.parameters));
+            }
         }
     }
 
     private static void clearBatches(Object statement) {
         synchronized (STATEMENTS) {
             StatementState state = STATEMENTS.get(statement);
-            if (state != null) state.batches.clear();
+            if (state != null) { state.batches.clear(); state.batchCount = 0; }
         }
     }
 
@@ -395,17 +436,19 @@ public final class JdbcSpanSupport {
         private String datasource = "";
         private final Map<Integer, String> parameters = new LinkedHashMap<>();
         private final List<Map<Integer, String>> batches = new ArrayList<>();
+        private long batchCount;
     }
 
     private record StatementSnapshot(String sql, String datasource, Map<Integer, String> parameters,
-                                     List<Map<Integer, String>> batches) { }
+                                     List<Map<Integer, String>> batches, long batchCount) { }
 
     private record DatabaseTarget(String safeUrl, String system, String namespace, String serverAddress,
                                   String serverPort) { }
 
-    private enum Operation { PARAMETER, CLEAR_PARAMETERS, ADD_BATCH, CLOSE, EXECUTION }
+    private enum Operation { PARAMETER, CLEAR_PARAMETERS, ADD_BATCH, CLEAR_BATCH, CLOSE, EXECUTION }
 
     public static final class Context {
+        private boolean batchExecution;
         private final Operation operation;
         private final Object statement;
         private final int parameterIndex;
@@ -435,12 +478,18 @@ public final class JdbcSpanSupport {
             return new Context(Operation.ADD_BATCH, statement, -1, "", null, Map.of());
         }
 
+        private static Context clearBatch(Object statement) {
+            return new Context(Operation.CLEAR_BATCH, statement, -1, "", null, Map.of());
+        }
+
         private static Context close(Object statement) {
             return new Context(Operation.CLOSE, statement, -1, "", null, Map.of());
         }
 
-        private static Context execution(SpanContext span, Object statement, Map<String, String> attributes) {
-            return new Context(Operation.EXECUTION, statement, -1, "", span, attributes);
+        private static Context execution(SpanContext span, Object statement, Map<String, String> attributes, boolean batchExecution) {
+            Context context = new Context(Operation.EXECUTION, statement, -1, "", span, attributes);
+            context.batchExecution = batchExecution;
+            return context;
         }
 
         SpanContext span() { return span; }

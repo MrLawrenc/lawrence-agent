@@ -2,6 +2,9 @@ package com.agentmonitor.app.ui;
 
 import java.util.function.Consumer;
 import java.util.Comparator;
+import java.util.Locale;
+import com.agentmonitor.app.util.AppLog;
+import javafx.scene.control.Tooltip;
 
 import com.agentmonitor.app.model.JvmProcess;
 import com.agentmonitor.app.service.JvmService;
@@ -38,6 +41,12 @@ public class JvmSelectDialog {
     private final ProgressIndicator refreshProgress = new ProgressIndicator();
     private volatile boolean refreshing = false;
     private Consumer<JvmProcess> onConfirm;
+    private final Label resultCount = new Label("正在发现本机进程…");
+    private final Label emptyTitle = new Label("正在扫描 JVM 进程");
+    private final Label emptyDescription = new Label("正在读取本机可连接的 Java 应用，请稍候。");
+    private final TextField searchField = new TextField();
+    private String scanError;
+    private boolean confirmed;
 
     public JvmSelectDialog(Stage owner) {
         dialog = new Stage();
@@ -46,30 +55,32 @@ public class JvmSelectDialog {
         dialog.initStyle(StageStyle.DECORATED);
         dialog.setTitle("Agent Monitor");
         dialog.getIcons().add(AppIcons.monitorIcon());
-        dialog.setResizable(false);
+        dialog.setResizable(true);
+        dialog.setMinWidth(760);
+        dialog.setMinHeight(560);
 
         listView = buildListView();
 
         /* ── Big title ─────────────────────────────────────── */
-        Label appTitle = new Label("Agent Monitor");
+        Label appTitle = new Label("选择目标进程");
         appTitle.getStyleClass().add("jvm-select-title");
-        Label appSubtitle = new Label("选择一个 Java 进程，开始性能监控与调用追踪");
+        Label appSubtitle = new Label("连接本机 Java 应用，按需观测方法耗时与调用链。");
         appSubtitle.getStyleClass().add("jvm-select-subtitle");
         VBox titleBox = new VBox(6, appTitle, appSubtitle);
         titleBox.setAlignment(Pos.CENTER_LEFT);
         titleBox.setPadding(new Insets(8, 0, 8, 0));
 
         /* ── Search bar ─────────────────────────────────────── */
-        TextField searchField = new TextField();
         searchField.setPromptText("搜索 JVM 进程（PID / 主类 / 路径）");
         searchField.getStyleClass().add("search-field");
         HBox.setHgrow(searchField, Priority.ALWAYS);
         searchField.textProperty().addListener((obs, old, val) -> {
-            String lower = val == null ? "" : val.toLowerCase();
+            String lower = val == null ? "" : val.trim().toLowerCase(Locale.ROOT);
             filtered.setPredicate(p ->
                     lower.isEmpty()
                     || p.getPid().contains(lower)
-                    || p.getDisplayName().toLowerCase().contains(lower));
+                    || p.getDisplayName().toLowerCase(Locale.ROOT).contains(lower));
+            updateResults();
             if (!filtered.isEmpty()) {
                 listView.getSelectionModel().select(0);
                 listView.scrollTo(0);
@@ -80,8 +91,6 @@ public class JvmSelectDialog {
                 listView.requestFocus();
                 if (listView.getSelectionModel().isEmpty() && !filtered.isEmpty()) {
                     listView.getSelectionModel().select(0);
-                } else {
-                    listView.getSelectionModel().selectNext();
                 }
                 e.consume();
             } else if (e.getCode() == KeyCode.UP) {
@@ -89,6 +98,7 @@ public class JvmSelectDialog {
                 listView.getSelectionModel().selectPrevious();
                 e.consume();
             } else if (e.getCode() == KeyCode.ENTER) {
+                confirm();
                 e.consume();
             } else if (e.getCode() == KeyCode.ESCAPE) {
                 dialog.close();
@@ -97,6 +107,7 @@ public class JvmSelectDialog {
         });
 
         refreshBtn.getStyleClass().add("ghost-btn");
+        UiIcons.decorate(refreshBtn, "refresh");
         refreshBtn.setOnAction(e -> refresh());
         refreshProgress.setPrefSize(18, 18);
         refreshProgress.setMaxSize(18, 18);
@@ -111,22 +122,25 @@ public class JvmSelectDialog {
         VBox.setVgrow(listView, Priority.ALWAYS);
 
         /* ── Confirm button ─────────────────────────────────── */
-        Button confirmBtn = new Button("开始监控");
+        Button confirmBtn = new Button("继续配置");
         confirmBtn.getStyleClass().addAll("primary-btn", "jvm-confirm-btn");
-        confirmBtn.setPrefWidth(200);
+        confirmBtn.setPrefWidth(160);
         confirmBtn.setPrefHeight(42);
-        confirmBtn.setStyle("-fx-font-size:14px;");
+        UiIcons.decorate(confirmBtn, "arrow");
         confirmBtn.setDefaultButton(false);
         confirmBtn.setOnAction(e -> confirm());
         confirmBtn.disableProperty().bind(
                 listView.getSelectionModel().selectedItemProperty().isNull());
 
-        HBox btnBar = new HBox(confirmBtn);
-        btnBar.setAlignment(Pos.CENTER);
-        btnBar.setPadding(new Insets(10, 0, 6, 0));
-
-        /* ── Content + centering ────────────────────────────── */
-        VBox content = new VBox(12, titleBox, searchBar, listView, btnBar);
+        Label keyboardHint = new Label("↑ ↓ 选择进程    Enter 继续    F5 刷新");
+        keyboardHint.getStyleClass().add("hint-label");
+        Region footerSpacer = new Region();
+        HBox.setHgrow(footerSpacer, Priority.ALWAYS);
+        HBox btnBar = new HBox(12, keyboardHint, footerSpacer, confirmBtn);
+        btnBar.setAlignment(Pos.CENTER_LEFT);
+        btnBar.getStyleClass().add("selector-footer");
+        resultCount.getStyleClass().add("section-header");
+        VBox content = new VBox(16, titleBox, searchBar, resultCount, listView, btnBar);
         content.getStyleClass().add("jvm-select-card");
         HBox.setHgrow(content, Priority.ALWAYS);
         VBox.setVgrow(listView, Priority.ALWAYS);
@@ -146,7 +160,7 @@ public class JvmSelectDialog {
             if (e.getCode() == KeyCode.ESCAPE) {
                 dialog.close();
                 e.consume();
-            } else if (e.getCode() == KeyCode.F5 || (e.isMetaDown() && e.getCode() == KeyCode.R)) {
+            } else if (e.getCode() == KeyCode.F5 || (e.isShortcutDown() && e.getCode() == KeyCode.R)) {
                 refresh();
                 e.consume();
             }
@@ -180,14 +194,12 @@ public class JvmSelectDialog {
         return lv;
     }
 
-    private static VBox buildPlaceholder() {
-        Label ico = new Label("○");
-        ico.getStyleClass().add("jvm-empty-icon");
-        Label msg = new Label("未发现 JVM 进程");
-        msg.getStyleClass().add("jvm-empty-title");
-        Label sub = new Label("请确认有 Java 进程正在运行");
-        sub.getStyleClass().add("jvm-empty-subtitle");
-        VBox box = new VBox(6, ico, msg, sub);
+    private VBox buildPlaceholder() {
+        emptyTitle.getStyleClass().add("jvm-empty-title");
+        emptyDescription.getStyleClass().add("jvm-empty-subtitle");
+        emptyDescription.setWrapText(true);
+        emptyDescription.setMaxWidth(420);
+        VBox box = new VBox(12, UiIcons.icon("search"), emptyTitle, emptyDescription);
         box.setAlignment(Pos.CENTER);
         return box;
     }
@@ -206,13 +218,16 @@ public class JvmSelectDialog {
             titleLbl.getStyleClass().add("jvm-process-title");
             detailLbl.getStyleClass().add("jvm-process-detail");
             typeBadge.getStyleClass().add("jvm-type-badge");
+            textBox.setMinWidth(0);
+            titleLbl.setMaxWidth(Double.MAX_VALUE);
+            detailLbl.setMaxWidth(Double.MAX_VALUE);
             titleLbl.setWrapText(false);
             detailLbl.setWrapText(false);
             HBox.setHgrow(textBox, Priority.ALWAYS);
             HBox.setHgrow(card.getChildren().get(2), Priority.ALWAYS);
             card.getStyleClass().add("jvm-process-card");
             card.setAlignment(Pos.CENTER_LEFT);
-            setStyle("-fx-background-color:transparent; -fx-padding:0 0 8 0;");
+
             setPrefHeight(82);
             setMinHeight(82);
             setMaxHeight(82);
@@ -226,7 +241,9 @@ public class JvmSelectDialog {
                 setGraphic(null);
                 getStyleClass().remove("jvm-card-selected-cell");
             } else {
-                pidBadge.setText(item.getPid());
+                pidBadge.setText("PID " + item.getPid());
+                setAccessibleText(item.getDisplayName() + ", PID " + item.getPid());
+                setTooltip(new Tooltip(item.getDisplayName()));
                 titleLbl.setText(displayTitle(item.getDisplayName()));
                 detailLbl.setText(displayDetail(item.getDisplayName()));
                 typeBadge.setText(typeLabel(item.getDisplayName()));
@@ -282,7 +299,8 @@ public class JvmSelectDialog {
     /* ── Actions ───────────────────────────────────────────── */
     private void confirm() {
         JvmProcess selected = listView.getSelectionModel().getSelectedItem();
-        if (selected == null) return;
+        if (selected == null || refreshing || confirmed) return;
+        confirmed = true;
         dialog.close();
         if (onConfirm != null) onConfirm.accept(selected);
     }
@@ -290,11 +308,13 @@ public class JvmSelectDialog {
     private void refresh() {
         if (refreshing) return;
         refreshing = true;
+        scanError = null;
+        updateResults();
         refreshBtn.setDisable(true);
-        refreshBtn.setText("扫描中...");
+        refreshBtn.setText("扫描中…");
         refreshProgress.setVisible(true);
         refreshProgress.setManaged(true);
-        new Thread(() -> {
+        Thread scanner = new Thread(() -> {
             try {
                 java.util.List<JvmProcess> list = JvmService.listProcesses().stream()
                         .sorted(Comparator.comparingInt(this::processRank)
@@ -304,25 +324,49 @@ public class JvmSelectDialog {
                 Platform.runLater(() -> {
                     JvmProcess sel = listView.getSelectionModel().getSelectedItem();
                     allItems.setAll(list);
-                    if (sel != null) {
-                        allItems.stream()
-                                .filter(p -> p.getPid().equals(sel.getPid()))
-                                .findFirst()
-                                .ifPresent(p -> listView.getSelectionModel().select(p));
-                    } else if (!filtered.isEmpty()) {
-                        listView.getSelectionModel().select(0);
-                    }
+                    JvmProcess previous = sel == null ? null : filtered.stream()
+                            .filter(p -> p.getPid().equals(sel.getPid())).findFirst().orElse(null);
+                    if (previous != null) listView.getSelectionModel().select(previous);
+                    else if (!filtered.isEmpty()) listView.getSelectionModel().selectFirst();
+                    updateResults();
+                });
+            } catch (Exception error) {
+                AppLog.warn("JVM scan failed: " + error.getMessage());
+                Platform.runLater(() -> {
+                    scanError = "扫描失败，请重新扫描。";
+                    allItems.clear();
                 });
             } finally {
                 Platform.runLater(() -> {
                     refreshing = false;
+                    updateResults();
                     refreshBtn.setDisable(false);
                     refreshBtn.setText("重新扫描");
                     refreshProgress.setVisible(false);
                     refreshProgress.setManaged(false);
                 });
             }
-        }, "jvm-refresh").start();
+        }, "jvm-refresh");
+        scanner.setDaemon(true);
+        scanner.start();
+    }
+
+    private void updateResults() {
+        resultCount.setText(refreshing ? "正在发现本机进程…"
+                : "可连接进程 · " + filtered.size() + " / " + allItems.size());
+        if (refreshing) {
+            emptyTitle.setText("正在扫描 JVM 进程");
+            emptyDescription.setText("正在读取本机可连接的 Java 应用，请稍候。");
+        } else if (scanError != null) {
+            emptyTitle.setText("暂时无法读取进程");
+            emptyDescription.setText(scanError);
+        } else if (!searchField.getText().isBlank()) {
+            emptyTitle.setText("没有匹配的进程");
+            emptyDescription.setText("试试其他 PID、主类或路径，或清空搜索条件。");
+        } else {
+            emptyTitle.setText("未发现 JVM 进程");
+            emptyDescription.setText("启动需要监控的 Java 应用后，点击「重新扫描」。");
+        }
     }
 
     private int processRank(JvmProcess process) {

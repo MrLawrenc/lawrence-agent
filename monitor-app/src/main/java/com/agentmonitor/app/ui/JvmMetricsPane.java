@@ -22,18 +22,17 @@ public class JvmMetricsPane extends VBox {
             DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
 
     private final Label statusLabel = new Label("等待采集");
-    private final MetricCard heapCard = new MetricCard("Heap", "0 MB", "0 / 0 MB");
-    private final MetricCard nonHeapCard = new MetricCard("Non-Heap", "0 MB", "0 / 0 MB");
-    private final MetricCard threadCard = new MetricCard("Threads", "0", "daemon 0");
-    private final MetricCard gcCard = new MetricCard("GC", "0 次", "0 ms");
-    private final MetricCard classCard = new MetricCard("Classes", "0", "total 0");
+    private final MetricCard heapCard = new MetricCard("堆内存", "—", "等待采集");
+    private final MetricCard nonHeapCard = new MetricCard("非堆内存", "—", "等待采集");
+    private final MetricCard threadCard = new MetricCard("线程", "—", "等待采集");
+    private final MetricCard gcCard = new MetricCard("GC", "—", "等待采集");
+    private final MetricCard classCard = new MetricCard("已加载类", "—", "等待采集");
 
     public JvmMetricsPane() {
         getStyleClass().add("jvm-metrics-pane");
         setSpacing(10);
 
-        Label icon = new Label("◈");
-        icon.getStyleClass().add("metrics-panel-icon");
+        javafx.scene.layout.StackPane icon = UiIcons.icon("monitor");
         Label title = new Label("JVM 指标");
         title.getStyleClass().add("card-title");
 
@@ -45,6 +44,11 @@ public class JvmMetricsPane extends VBox {
         head.getStyleClass().add("preview-panel-head");
 
         GridPane grid = new GridPane();
+        for (int i = 0; i < 2; i++) {
+            javafx.scene.layout.ColumnConstraints column = new javafx.scene.layout.ColumnConstraints();
+            column.setPercentWidth(50);
+            grid.getColumnConstraints().add(column);
+        }
         grid.setHgap(8);
         grid.setVgap(8);
         grid.add(heapCard, 0, 0);
@@ -60,6 +64,7 @@ public class JvmMetricsPane extends VBox {
 
         Label hint = new Label("旁路采集，不影响当前 Java 方法监控配置。");
         hint.getStyleClass().add("metrics-hint-label");
+        hint.setWrapText(true);
 
         getChildren().addAll(head, grid, hint);
     }
@@ -71,7 +76,10 @@ public class JvmMetricsPane extends VBox {
             statusLabel.getStyleClass().removeAll("metrics-status-ok");
             statusLabel.getStyleClass().add("metrics-status-error");
             heapCard.setValue("不可用", metrics.error(), 0);
-            nonHeapCard.setValue("不可用", "等待下次采样", 0);
+            nonHeapCard.setValue("—", "等待下次采样", 0);
+            threadCard.setValue("—", "等待下次采样", 0);
+            gcCard.setValue("—", "等待下次采样", 0);
+            classCard.setValue("—", "等待下次采样", 0);
             return;
         }
 
@@ -124,6 +132,9 @@ public class JvmMetricsPane extends VBox {
             titleLabel.getStyleClass().add("metric-card-title");
             valueLabel.getStyleClass().add("metric-card-value");
             descLabel.getStyleClass().add("metric-card-desc");
+            setMinWidth(0);
+            descLabel.setMinWidth(0);
+            descLabel.setMaxWidth(Double.MAX_VALUE);
             progressBar.getStyleClass().add("metric-progress");
             progressBar.setMaxWidth(Double.MAX_VALUE);
 
@@ -134,6 +145,7 @@ public class JvmMetricsPane extends VBox {
         void setValue(String value, String desc, double progress) {
             valueLabel.setText(value == null ? "-" : value);
             descLabel.setText(desc == null ? "" : desc);
+            descLabel.setTooltip(new javafx.scene.control.Tooltip(descLabel.getText()));
             progressBar.setProgress(Math.max(0, Math.min(1, progress)));
         }
     }

@@ -133,7 +133,8 @@ public class JvmService {
                 || value.startsWith("java ")
                 || value.contains("java -")
                 || value.contains("jdk/bin/java")
-                || value.contains(".app/contents/home/bin/java");
+                || value.contains(".app/contents/home/bin/java")
+                || value.contains("/intellij idea.app/contents/macos/idea");
     }
 
     private static String compactCommand(String command) {
@@ -676,6 +677,8 @@ public class JvmService {
             throws Exception {
         if (config == null) throw new IllegalArgumentException("监控配置不能为空");
         config.requireValid();
+        if (session != null) com.agentmonitor.app.util.AtomicFiles.write(session.sessionDirectory().resolve("config.yml"),
+                com.agentmonitor.app.config.MonitoringConfigYaml.write(config));
         attachAgent(pid, config.packagePrefixesArg(), config.includeClassesArg(), port,
                 config.excludeConditionsArg(), config.excludeMethodsArg(),
                 AgentOutputConfig.from(config), session, config.sampling().ratePercent(),

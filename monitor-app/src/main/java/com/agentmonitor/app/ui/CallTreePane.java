@@ -2,6 +2,9 @@ package com.agentmonitor.app.ui;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import java.util.function.Consumer;
 
 import com.agentmonitor.app.model.CallNode;
@@ -46,6 +49,8 @@ public class CallTreePane extends VBox {
     private final TextField searchField;
     private final Button pauseOutputButton;
     private final VBox emptyState;
+    private final Label emptyTitle;
+    private final Label emptyDescription;
     private final List<TreeItem<CallNode>> allRoots = new ArrayList<>();
     private volatile long totalRoots = 0;
     private volatile boolean outputPaused = false;
@@ -94,10 +99,24 @@ public class CallTreePane extends VBox {
         TreeTableColumn<CallNode, CallNode> detailCol = new TreeTableColumn<>("");
         detailCol.setCellValueFactory(c -> new ReadOnlyObjectWrapper<>(c.getValue().getValue()));
         detailCol.setCellFactory(col -> new ButtonCell(CallTreePane.this::showDetailDialog));
-        detailCol.setPrefWidth(52);
+        detailCol.setPrefWidth(76);
         detailCol.setResizable(false);
         detailCol.setSortable(false);
 
+        treeTable.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+            TreeItem<CallNode> selected = treeTable.getSelectionModel().getSelectedItem();
+            if (selected == null) return;
+            if (event.getCode() == KeyCode.ENTER) {
+                showDetailDialog(selected.getValue());
+                event.consume();
+            } else if (event.getCode() == KeyCode.RIGHT && !selected.isLeaf()) {
+                selected.setExpanded(true);
+                event.consume();
+            } else if (event.getCode() == KeyCode.LEFT && selected.isExpanded()) {
+                selected.setExpanded(false);
+                event.consume();
+            }
+        });
         treeTable.setRowFactory(tv -> {
             TreeTableRow<CallNode> row = new TreeTableRow<>();
             Region empty = new Region();
@@ -127,10 +146,12 @@ public class CallTreePane extends VBox {
 
         Button clearBtn = new Button("清空");
         clearBtn.getStyleClass().add("action-btn");
+        clearBtn.setTooltip(new Tooltip("清空当前显示的调用链；会话文件保留在磁盘上"));
         clearBtn.setOnAction(e -> clear());
 
         pauseOutputButton = new Button("暂停输出");
         pauseOutputButton.getStyleClass().add("ghost-btn");
+        pauseOutputButton.setTooltip(new Tooltip("暂停界面接收新调用；Agent 继续采集到会话文件"));
         pauseOutputButton.setOnAction(e -> {
             outputPaused = !outputPaused;
             pauseOutputButton.setText(outputPaused ? "恢复输出" : "暂停输出");
@@ -143,13 +164,13 @@ public class CallTreePane extends VBox {
         toolbar.setPadding(new Insets(4, 8, 4, 0));
         toolbar.setAlignment(Pos.CENTER_LEFT);
 
-        Label emptyIcon  = new Label("◎");
-        emptyIcon.getStyleClass().add("empty-state-icon");
-        Label emptyTitle = new Label("暂无调用数据");
+        emptyTitle = new Label("等待第一条调用链");
         emptyTitle.getStyleClass().add("empty-state-title");
-        Label emptyDesc  = new Label("点击「开始监控」后，这里将显示调用链");
-        emptyDesc.getStyleClass().add("empty-state-desc");
-        emptyState = new VBox(8, emptyIcon, emptyTitle, emptyDesc);
+        emptyDescription = new Label("开始监控后，在目标应用中执行一次业务操作。");
+        emptyDescription.getStyleClass().add("empty-state-desc");
+        emptyDescription.setWrapText(true);
+        emptyDescription.setMaxWidth(420);
+        emptyState = new VBox(12, UiIcons.icon("monitor"), emptyTitle, emptyDescription);
         emptyState.setAlignment(Pos.CENTER);
         emptyState.setMouseTransparent(true);
 
@@ -169,7 +190,7 @@ public class CallTreePane extends VBox {
             totalRoots++;
             if (allRoots.size() > 500) allRoots.remove(allRoots.size() - 1);
             applyFilter(searchField.getText());
-            emptyState.setVisible(false);
+
         });
     }
 
@@ -201,7 +222,7 @@ public class CallTreePane extends VBox {
         }
         totalRoots = allRoots.size();
         applyFilter(searchField.getText());
-        emptyState.setVisible(allRoots.isEmpty());
+
     }
 
     private TreeItem<CallNode> buildTreeItem(CallNode node, int depth) {
@@ -522,20 +543,15 @@ public class CallTreePane extends VBox {
         allRoots.clear();
         rootItem.getChildren().clear();
         totalRoots = 0;
-        updateTitle();
-        emptyState.setVisible(true);
+        applyFilter(searchField.getText());
     }
 
     private void applyFilter(String text) {
         rootItem.getChildren().clear();
         List<TreeItem<CallNode>> filtered = new ArrayList<>();
+        String needle = text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
         for (TreeItem<CallNode> item : allRoots) {
-            CallNode n = item.getValue();
-            if (text == null || text.isEmpty()
-                    || n.getMethod().toLowerCase().contains(text.toLowerCase())
-                    || n.getThread().toLowerCase().contains(text.toLowerCase())) {
-                filtered.add(item);
-            }
+            if (needle.isEmpty() || matchesCall(item, needle)) filtered.add(item);
         }
         rootItem.getChildren().setAll(filtered);
         // Rebuilding the visible roots replaces the TreeItem list. JavaFX keeps the
@@ -545,7 +561,19 @@ public class CallTreePane extends VBox {
         if (!treeTable.getSortOrder().isEmpty()) {
             treeTable.sort();
         }
+        emptyState.setVisible(filtered.isEmpty());
+        boolean hasCalls = !allRoots.isEmpty();
+        emptyTitle.setText(hasCalls ? "没有匹配的调用链" : "等待第一条调用链");
+        emptyDescription.setText(hasCalls ? "试试其他方法名、线程名，或清空搜索条件。"
+                : "开始监控后，在目标应用中执行一次业务操作。");
         updateTitle(filtered.size());
+    }
+
+    private boolean matchesCall(TreeItem<CallNode> item, String needle) {
+        CallNode node = item.getValue();
+        if (node.getMethod().toLowerCase(Locale.ROOT).contains(needle)
+                || node.getThread().toLowerCase(Locale.ROOT).contains(needle)) return true;
+        return item.getChildren().stream().anyMatch(child -> matchesCall(child, needle));
     }
 
     private void updateTitle() {
@@ -572,7 +600,7 @@ public class CallTreePane extends VBox {
             indentRegion.setMinWidth(Region.USE_PREF_SIZE);
             toggleLbl.setStyle("-fx-text-fill: #6B7280; -fx-font-size: 12px;"
                     + " -fx-cursor: hand; -fx-min-width: 18; -fx-max-width: 18;");
-            nameLbl.setStyle("-fx-text-fill: #93C5FD; -fx-font-size: 13px;");
+            nameLbl.getStyleClass().add("call-method-name");
             tip.setStyle("-fx-font-size: 12px;");
             Tooltip.install(nameLbl, tip);
             content = new HBox(0, indentRegion, toggleLbl, nameLbl);
@@ -582,7 +610,10 @@ public class CallTreePane extends VBox {
                 TreeItem<CallNode> ti = getTreeTableRow().getTreeItem();
                 if (ti != null && !ti.getChildren().isEmpty()) {
                     ti.setExpanded(!ti.isExpanded());
-                    toggleLbl.setText(ti.isExpanded() ? "\u25BC" : "\u25B6");
+                    toggleLbl.setText("");
+                    javafx.scene.Node chevron = UiIcons.icon("chevron");
+                    chevron.setRotate(ti.isExpanded() ? 90 : 0);
+                    toggleLbl.setGraphic(chevron);
                     e.consume();
                 }
             });
@@ -603,9 +634,13 @@ public class CallTreePane extends VBox {
                         && cur.getParent().getValue() != null) { depth++; cur = cur.getParent(); }
                 indentRegion.setPrefWidth(depth * 9.0);
                 if (ti != null && !ti.getChildren().isEmpty()) {
-                    toggleLbl.setText(ti.isExpanded() ? "\u25BC" : "\u25B6");
+                    toggleLbl.setText("");
+                    javafx.scene.Node chevron = UiIcons.icon("chevron");
+                    chevron.setRotate(ti.isExpanded() ? 90 : 0);
+                    toggleLbl.setGraphic(chevron);
                 } else {
                     toggleLbl.setText("");
+                    toggleLbl.setGraphic(null);
                 }
                 nameLbl.setText(item);
                 tip.setText(item);
@@ -668,6 +703,7 @@ public class CallTreePane extends VBox {
 
         ButtonCell(Consumer<CallNode> action) {
             btn.getStyleClass().add("detail-btn");
+            btn.setMinWidth(48);
             btn.setOnAction(e -> {
                 if (getItem() != null) action.accept(getItem());
             });

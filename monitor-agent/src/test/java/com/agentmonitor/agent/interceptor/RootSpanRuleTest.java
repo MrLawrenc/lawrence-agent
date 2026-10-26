@@ -16,6 +16,7 @@ class RootSpanRuleTest {
 
     @BeforeEach
     void setUp() {
+        InFlightSpans.startSession();
         MethodSpanAdvice.ACTIVE = true;
         MethodSpanAdvice.PKG_FILTERS = new String[] { "example." };
         MethodSpanAdvice.CLS_FILTERS = new String[0];

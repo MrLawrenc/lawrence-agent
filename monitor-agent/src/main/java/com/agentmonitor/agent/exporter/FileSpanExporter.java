@@ -8,6 +8,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
+import com.agentmonitor.agent.interceptor.InFlightSpans;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -19,6 +22,8 @@ import com.agentmonitor.agent.log.AgentLog;
 import com.agentmonitor.agent.model.SpanData;
 import com.agentmonitor.agent.protocol.SpanPayloadSerializer;
 import com.agentmonitor.model.output.ExporterType;
+import com.agentmonitor.model.output.ExporterStatistics;
+import com.agentmonitor.model.protocol.TelemetryProtocol;
 
 /**
  * Writes schema-versioned JSON array files for AI analysis. It is only invoked
@@ -52,6 +57,7 @@ final class FileSpanExporter implements SpanExporter {
     private long written;
     private boolean hasEntries;
     private boolean completed;
+    private ExporterStatistics captureQuality = ExporterStatistics.unavailable();
 
     FileSpanExporter(String configuredDirectory, String configuredSessionDirectory,
                      long rotateBytes, long rotateMillis, boolean compress,
@@ -143,6 +149,9 @@ final class FileSpanExporter implements SpanExporter {
     }
 
     @Override
+    public void captureQuality(ExporterStatistics statistics) { captureQuality = statistics; }
+
+    @Override
     public ExporterDrainResult drain(long timeoutMillis) {
         if (sessionDirectory == null || completed) return ExporterDrainResult.success();
         try {
@@ -178,11 +187,24 @@ final class FileSpanExporter implements SpanExporter {
     }
 
     private void writeManifest(String status) throws IOException {
+        InFlightSpans.Boundary boundary = InFlightSpans.captureBoundary();
+        boolean captureComplete = "completed".equals(status) && boundary.complete() && !captureQuality.hasDegradation();
         String manifest = "{\"schemaVersion\":1,\"format\":\"json-array\",\"status\":\"" + status
                 + "\",\"startedAt\":\"" + sessionStartedAt + "\",\"writtenSpans\":" + written
+                + ",\"captureComplete\":" + captureComplete
+                + ",\"interruptedRootCalls\":" + boundary.interruptedRoots()
+                + ",\"pendingInvocationsAtStop\":" + boundary.pendingInvocations()
+                + ",\"outputQuality\":" + TelemetryProtocol.outputQualityMessage(captureQuality)
                 + ",\"resource\":" + attributesJson(resourceAttributes) + "}\n";
-        Files.writeString(sessionDirectory.resolve(MANIFEST_FILE_NAME), manifest, StandardCharsets.UTF_8,
+        Path target = sessionDirectory.resolve(MANIFEST_FILE_NAME);
+        Path temporary = target.resolveSibling(MANIFEST_FILE_NAME + ".tmp");
+        Files.writeString(temporary, manifest, StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        try {
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     private static String attributesJson(Map<String, String> attributes) {

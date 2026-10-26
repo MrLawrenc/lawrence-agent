@@ -27,6 +27,7 @@ import com.agentmonitor.app.ui.CallTreePane;
 import com.agentmonitor.app.ui.ClassSelectionPane;
 import com.agentmonitor.app.ui.JvmMetricsPane;
 import com.agentmonitor.app.ui.LogViewerDialog;
+import com.agentmonitor.app.ui.UiIcons;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.PauseTransition;
@@ -192,21 +193,21 @@ public class MainController {
         yamlPreview.textProperty().addListener((obs, old, now) -> {
             if (!updatingYaml) yamlDirty = true;
         });
-        startBtn     = new Button("Apply Configuration");
-        stopBtn      = new Button("Stop Monitoring");
-        pauseBtn     = new Button("⏸ 暂停输出");
-        refreshBtn   = new Button("⟳ 刷新");
-        logBtn       = new Button("▤ 运行日志");
-        importBtn    = new Button("⇩ 导入配置");
-        saveBtn      = new Button("▣ 保存配置");
-        sessionBtn   = new Button("▣ 本次会话");
+        startBtn     = new Button("开始监控");
+        stopBtn      = new Button("停止监控");
+        pauseBtn     = new Button("暂停输出");
+        refreshBtn   = new Button("刷新范围");
+        logBtn       = new Button("运行日志");
+        importBtn    = new Button("导入配置");
+        saveBtn      = new Button("保存配置");
+        sessionBtn   = new Button("本次会话");
         sessionBtn.getStyleClass().add("ghost-btn");
         sessionBtn.setDisable(true);
         sessionBtn.setOnAction(e -> showSessionActionsDialog(monitoringSession,
                 lastSessionOutputDrained, lastSessionStopMessage,
                 lastSessionCaptureQuality,
                 new SessionRetentionManager.CleanupResult(List.of(), List.of())));
-        replayBtn = new Button("↺ 打开历史会话");
+        replayBtn = new Button("历史会话");
         replayBtn.getStyleClass().add("ghost-btn");
         replayBtn.setOnAction(e -> openHistoricalReplay());
 
@@ -218,7 +219,11 @@ public class MainController {
         loadingLabel = new Label("请稍候...");
         loadingLabel.getStyleClass().add("loading-label");
 
-        VBox spinnerBox = new VBox(12, spinner, loadingLabel);
+        loadingLabel.setWrapText(true);
+        loadingLabel.setMaxWidth(440);
+        VBox spinnerBox = new VBox(16, spinner, loadingLabel);
+        spinnerBox.getStyleClass().add("loading-panel");
+        spinnerBox.setMaxSize(520, 200);
         spinnerBox.setAlignment(Pos.CENTER);
 
         loadingOverlay = new StackPane(spinnerBox);
@@ -249,8 +254,8 @@ public class MainController {
     }
 
     private ToolBar buildToolbar() {
-        Label icon = new Label("⌁");
-        icon.getStyleClass().add("app-icon");
+        StackPane icon = UiIcons.icon("monitor");
+        icon.getStyleClass().add("brand-icon");
 
         Label appTitle = new Label("Java 性能监控工具");
         appTitle.getStyleClass().add("app-title");
@@ -272,7 +277,8 @@ public class MainController {
         logBtn.setOnAction(e -> showLogDialog());
 
         Button switchBtn = new Button("切换目标");
-        switchBtn.getStyleClass().add("primary-btn");
+        switchBtn.getStyleClass().add("ghost-btn");
+        UiIcons.decorate(switchBtn, "switch");
         switchBtn.setOnAction(e -> {
             if (monitoring) stopMonitoring();
             if (onSwitchTarget != null) onSwitchTarget.run();
@@ -280,10 +286,17 @@ public class MainController {
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox metricChips = buildMetricChips();
+        VBox identity = new VBox(3, resourceServiceLabel, resourceRuntimeLabel);
+        identity.setMinWidth(0);
+        UiIcons.decorate(refreshBtn, "refresh");
+        UiIcons.decorate(logBtn, "file");
+        UiIcons.decorate(importBtn, "download");
+        UiIcons.decorate(saveBtn, "save");
+        UiIcons.decorate(replayBtn, "folder");
+        UiIcons.decorate(sessionBtn, "folder");
 
-        ToolBar toolbar = new ToolBar(icon, appTitle, new Separator(), resourceServiceLabel,
-                resourceEnvironmentLabel, resourceRuntimeLabel, agentConnectionLabel, spacer, metricChips, switchBtn);
+        ToolBar toolbar = new ToolBar(icon, appTitle, new Separator(), identity,
+                resourceEnvironmentLabel, agentConnectionLabel, spacer, switchBtn);
         toolbar.getStyleClass().add("app-toolbar");
         return toolbar;
     }
@@ -421,15 +434,13 @@ public class MainController {
         Region topSpacer = new Region();
         HBox.setHgrow(topSpacer, Priority.ALWAYS);
 
-        Button outputBtn = new Button("▤ 查看监控输出");
+        Button outputBtn = new Button("查看调用链");
         outputBtn.getStyleClass().add("ghost-btn");
         outputBtn.setOnAction(e -> showOutputDialog());
 
-        HBox btnBox = new HBox(8, refreshBtn, logBtn, importBtn, saveBtn, outputBtn, replayBtn, sessionBtn);
-        btnBox.setAlignment(Pos.CENTER_RIGHT);
-
-        HBox topBar = new HBox(statusInfo, topSpacer, btnBox);
-        topBar.setAlignment(Pos.CENTER_LEFT);
+        UiIcons.decorate(outputBtn, "monitor");
+        ToolBar topBar = new ToolBar(statusInfo, topSpacer, refreshBtn, outputBtn,
+                new Separator(), importBtn, saveBtn, logBtn, replayBtn, sessionBtn);
         topBar.setMinHeight(48);
         topBar.setPrefHeight(48);
         topBar.setMaxHeight(48);
@@ -464,13 +475,16 @@ public class MainController {
 
     private HBox buildPreviewTopBar() {
         ToggleButton configBtn = new ToggleButton("配置");
-        ToggleButton metricsBtn = new ToggleButton("◈ JVM 指标");
+        ToggleButton metricsBtn = new ToggleButton("JVM 指标");
         configBtn.getStyleClass().add("segment-btn");
         metricsBtn.getStyleClass().add("segment-btn");
         ToggleGroup group = new ToggleGroup();
         configBtn.setToggleGroup(group);
         metricsBtn.setToggleGroup(group);
         configBtn.setSelected(true);
+        group.selectedToggleProperty().addListener((obs, old, selected) -> {
+            if (selected == null) group.selectToggle(old);
+        });
         configBtn.setOnAction(e -> switchPreviewTab(true));
         metricsBtn.setOnAction(e -> switchPreviewTab(false));
         HBox segments = new HBox(4, configBtn, metricsBtn);
@@ -490,17 +504,23 @@ public class MainController {
         Label title = new Label("配置 YAML");
         title.getStyleClass().add("card-title");
 
-        Button editBtn = new Button("大屏编辑");
+        Button editBtn = new Button("编辑");
         editBtn.getStyleClass().add("ghost-btn");
         editBtn.setOnAction(e -> showYamlEditorDialog());
 
         Button copyBtn = new Button("复制");
         copyBtn.getStyleClass().add("ghost-btn");
+        UiIcons.decorate(editBtn, "edit");
+        UiIcons.decorate(copyBtn, "copy");
         copyBtn.setOnAction(e -> {
             ClipboardContent content = new ClipboardContent();
             content.putString(yamlPreview.getText());
             Clipboard.getSystemClipboard().setContent(content);
             setStatus("YAML 配置已复制到剪贴板");
+            copyBtn.setText("已复制");
+            PauseTransition feedback = new PauseTransition(Duration.seconds(1.5));
+            feedback.setOnFinished(done -> copyBtn.setText("复制"));
+            feedback.play();
         });
 
         Region spacer = new Region();
@@ -624,9 +644,12 @@ public class MainController {
 
     private void buildActionBar() {
         startBtn.getStyleClass().addAll("action-btn", "start-btn");
+        UiIcons.decorate(startBtn, "play");
+        startBtn.setTooltip(new Tooltip("将当前配置应用到目标 JVM，开始采集调用链"));
         startBtn.setOnAction(e -> startMonitoring());
 
         stopBtn.getStyleClass().addAll("action-btn", "stop-btn");
+        UiIcons.decorate(stopBtn, "stop");
         stopBtn.setDisable(true);
         stopBtn.setVisible(false);
         stopBtn.setManaged(false);
@@ -640,14 +663,15 @@ public class MainController {
     private HBox buildStatusBar() {
         statusLabel.getStyleClass().add("status-label");
         statusLabel.setMinWidth(0);
-        statusLabel.setMaxWidth(220);
+        statusLabel.setMaxWidth(Double.MAX_VALUE);
+        HBox.setHgrow(statusLabel, Priority.ALWAYS);
         statusLabel.setTextOverrun(OverrunStyle.ELLIPSIS);
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox bar = new HBox(10, statusLabel, spacer, startBtn, stopBtn);
+        HBox bar = new HBox(14, statusLabel, spacer, buildMetricChips(), startBtn, stopBtn);
         bar.getStyleClass().add("status-bar");
         bar.setAlignment(Pos.CENTER_LEFT);
-        bar.setPadding(new Insets(4, 10, 4, 10));
+
         return bar;
     }
 
@@ -671,9 +695,9 @@ public class MainController {
             setStatus("启动失败: 选择范围过大");
             return;
         }
-        if (pkgs.isBlank()) {
-            showAlert(Alert.AlertType.WARNING, "启动失败：YAML 中 includePackages 不能为空。\n\n请先在左侧勾选包，或手动在 YAML 中添加：\nincludePackages:\n  - com.example");
-            setStatus("启动失败: includePackages 不能为空");
+        if (pkgs.isBlank() && config.scope().includeClasses().isEmpty()) {
+            showAlert(Alert.AlertType.WARNING, "启动失败：YAML 中 includePackages 与 includeClasses 至少填写一项。\n\n请在左侧勾选包或类，或在 YAML 中填写目标范围。");
+            setStatus("启动失败: 尚未选择要采集的包或类");
             return;
         }
 
@@ -846,7 +870,7 @@ public class MainController {
                     if (result.outputDrained()) {
                         setStatus("已停止监控，字节码已还原；" + result.captureQuality().summary() + cleanupSummary);
                     } else {
-                        setStatus("已停止监控，字节码已还原；尾部输出未完全 drain；"
+                        setStatus("已停止监控，字节码已还原；本次采集不完整；"
                                 + result.captureQuality().summary() + cleanupSummary);
                     }
                     showSessionActionsDialog(session, result.outputDrained(), result.message(),
@@ -869,11 +893,11 @@ public class MainController {
         paused = !paused;
         if (paused) {
             traceServer.setOnRootNode(node -> {});
-            pauseBtn.setText("▶ 恢复输出");
+            pauseBtn.setText("恢复输出");
             setStatus("已暂停输出（agent 持续运行）");
         } else {
             traceServer.setOnRootNode(callTreePane::addRootNode);
-            pauseBtn.setText("⏸ 暂停输出");
+            pauseBtn.setText("暂停输出");
             setStatus("监控中");
         }
     }
@@ -1016,6 +1040,7 @@ public class MainController {
 
     private void setStatus(String msg) {
         statusLabel.setText(msg);
+        statusLabel.setTooltip(new Tooltip(msg));
     }
 
     /** Establishes one model before the asynchronous class index begins driving the preview. */
@@ -1240,7 +1265,7 @@ public class MainController {
         showOutputDialog();
         String quality = result.hasDegradation()
                 ? "；跳过 " + result.skippedSpans() + " 个，孤儿 " + result.orphanSpans()
-                        + " 个，循环 " + result.cyclicSpans() + " 个"
+                        + " 个，循环 " + result.cyclicSpans() + " 个，文件警告 " + result.warnings().size() + " 项"
                 : "";
         setStatus("已离线回放 " + result.spanFileCount() + " 个 Span 文件、" + result.acceptedSpans()
                 + " 个 Span、" + result.roots().size() + " 条调用链" + quality);
@@ -1375,11 +1400,11 @@ public class MainController {
         if (session == null) return;
         Dialog<Void> dialog = new Dialog<>();
         dialog.setTitle("本次监控会话");
-        dialog.setHeaderText(outputDrained ? "监控已停止，可开始分析本次会话" : "监控已停止，但尾部输出不完整");
+        dialog.setHeaderText(outputDrained ? "监控已停止，可开始分析本次会话" : "监控已停止，但本次采集不完整");
 
         Label description = new Label(outputDrained
                 ? "字节码已还原，最终报告已在停止流程中写入。"
-                : "字节码已还原，可以开始下一轮监控；但 Agent 的尾部输出未完全 drain，报告可能缺少最后一小段数据。");
+                : "字节码已还原，可以开始下一轮监控；本次存在未完成调用、未闭合链路或导出未完成，请结合下方原因检查报告完整性。");
         description.setWrapText(true);
         description.getStyleClass().add("hint-label");
 

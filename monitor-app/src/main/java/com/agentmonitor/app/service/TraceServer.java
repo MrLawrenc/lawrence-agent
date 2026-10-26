@@ -69,6 +69,9 @@ public class TraceServer {
     private final PerformanceReportCollector performanceReportCollector;
     private final Map<String, TraceState> traceStates = new HashMap<>();
     private final Object stopLock = new Object();
+    private final Object sessionLock = new Object();
+    private boolean acceptingSpans;
+    private volatile StopResult finishedResult;
     /** Serializes publication of the one canonical Agent control connection. */
     private final Object controlChannelLock = new Object();
     private CompletableFuture<Channel> nextControlChannel = new CompletableFuture<>();
@@ -118,6 +121,7 @@ public class TraceServer {
     public int start() throws Exception {
         performanceReportCollector.start();
         stopping = false;
+        synchronized (sessionLock) { acceptingSpans = true; finishedResult = null; }
         stopAcknowledgement = null;
         resetCaptureQuality();
         resetControlChannelState();
@@ -153,6 +157,7 @@ public class TraceServer {
      */
     public StopResult stopAndAwaitRestore() {
         synchronized (stopLock) {
+            if (finishedResult != null) return finishedResult;
             if (serverChannel == null) {
                 return finishSession(StopResult.notConfirmed("Collector 未启动，无法确认 Agent 状态"));
             }
@@ -275,12 +280,18 @@ public class TraceServer {
         resetControlChannelState();
     }
 
-    public long getEventCount() { return eventCount; }
+    public long getEventCount() { synchronized (traceStates) { return eventCount; } }
 
     /** Final snapshot remains available after the Collector releases its Netty resources. */
     public CaptureQuality getLastCaptureQuality() { return lastCaptureQuality; }
 
     private void accept(SpanEvent span) {
+        synchronized (sessionLock) {
+            if (acceptingSpans) acceptWithinSession(span);
+        }
+    }
+
+    private void acceptWithinSession(SpanEvent span) {
         // SQL is dependency evidence and must be attached to another trace span, never a root.
         if (span.kind() == SpanKind.SQL && span.parentSpanId().isBlank()) {
             recordDiscardedSpan();
@@ -305,6 +316,16 @@ public class TraceServer {
             if (span.parentSpanId().isBlank()) {
                 completedRoot = node;
                 completedTraceId = span.traceId();
+                // Root arrival is terminal for this synchronous trace. Disconnected fragments
+                // must be counted before removing its assembly state.
+                java.util.Set<CallNode> reachable = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+                java.util.ArrayDeque<CallNode> pending = new java.util.ArrayDeque<>();
+                pending.add(node);
+                while (!pending.isEmpty()) {
+                    CallNode next = pending.removeFirst();
+                    if (reachable.add(next)) pending.addAll(next.getChildren());
+                }
+                discardedSpanCount += Math.max(0, trace.nodes.size() - reachable.size());
                 traceStates.remove(span.traceId());
             } else {
                 CallNode parent = trace.nodes.get(span.parentSpanId());
@@ -447,15 +468,35 @@ public class TraceServer {
     }
 
     private StopResult finishSession(StopResult result) {
-        // A reset-only stop is safe for the target JVM but its final telemetry tail is not a
-        // complete capture. Keep that distinction in the durable report consumed by AI tooling.
-        ReportStatus reportStatus = result.restored() && result.outputDrained()
-                ? ReportStatus.COMPLETED : ReportStatus.INCOMPLETE;
-        CaptureQuality quality = captureQuality();
-        lastCaptureQuality = quality;
-        performanceReportCollector.finish(reportStatus, result.message(), quality);
+        synchronized (sessionLock) {
+            if (finishedResult != null) return finishedResult;
+            acceptingSpans = false;
+            synchronized (traceStates) {
+                long unresolved = traceStates.values().stream().mapToLong(trace -> trace.nodes.size()).sum();
+                if (unresolved > 0) {
+                    discardedSpanCount += unresolved;
+                    if (result.restored() && result.outputDrained()) {
+                        result = StopResult.drainFailed("Collector 有 " + traceStates.size() + " 条未完成链路（"
+                                + unresolved + " 个 Span 未形成完整根调用）；" + result.message());
+                    }
+                }
+            }
+            ReportStatus reportStatus = result.restored() && result.outputDrained()
+                    ? ReportStatus.COMPLETED : ReportStatus.INCOMPLETE;
+            CaptureQuality quality = captureQuality();
+            lastCaptureQuality = quality;
+            try {
+                performanceReportCollector.finish(reportStatus, result.message(), quality);
+            } catch (RuntimeException error) {
+                notifyStatus("报告写入失败: " + messageOf(error));
+                result = result.restored() ? StopResult.drainFailed(result.message() + "；报告写入失败: " + messageOf(error))
+                        : StopResult.notConfirmed(result.message() + "；报告写入失败: " + messageOf(error));
+            }
+            result = result.withCaptureQuality(quality);
+            finishedResult = result;
+        }
         closeInfrastructure();
-        return result.withCaptureQuality(quality);
+        return result;
     }
 
     private CaptureQuality captureQuality() {

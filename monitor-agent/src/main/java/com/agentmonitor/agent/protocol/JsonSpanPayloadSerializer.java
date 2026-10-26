@@ -9,6 +9,7 @@ public final class JsonSpanPayloadSerializer implements SpanPayloadSerializer {
 
     @Override
     public String serialize(SpanData span) {
+        span = SpanPayloadLimits.limit(span);
         StringBuilder json = new StringBuilder(512);
         json.append('{')
                 .append("\"").append(TelemetryProtocol.TYPE_FIELD).append("\":\"")

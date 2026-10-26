@@ -5,7 +5,6 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.agentmonitor.agent.exporter.SpanExporter;
@@ -14,6 +13,7 @@ import com.agentmonitor.model.config.MonitoringConfig;
 import com.agentmonitor.model.config.MonitoringConfig.TailOverflowPolicy;
 import com.agentmonitor.agent.model.SpanEventData;
 import com.agentmonitor.agent.model.SpanStatus;
+import com.agentmonitor.agent.protocol.SpanPayloadLimits;
 import com.agentmonitor.model.span.SpanAttribute;
 
 import net.bytebuddy.asm.Advice;
@@ -23,11 +23,8 @@ public final class MethodSpanAdvice {
 
     private static final String TRACE_ID_PREFIX = "trace-";
     private static final char ID_SEPARATOR = '-';
-    private static final int SERIALIZATION_DEPTH = 2;
     private static final int MAX_STACK_TRACE_CHARACTERS = 8_000;
     private static final int MAX_VALUE_CHARACTERS = 200;
-    private static final int MAX_ARRAY_ELEMENTS = 10;
-    private static final int MAX_MAP_ENTRIES = 20;
     private static final int SAMPLING_BUCKETS = 100;
 
     public static volatile SpanExporter EXPORTER;
@@ -61,25 +58,30 @@ public final class MethodSpanAdvice {
     public static SpanContext onEnter(@Advice.Origin("#t") String className,
                                       @Advice.Origin("#m") String methodName,
                                       @Advice.AllArguments Object[] allArgs) {
-        if (!MethodSpanAdvice.ACTIVE || !MethodSpanAdvice.matchesFilter(className)) return null;
+        if (!ACTIVE || ValueCapture.active() || !matchesFilter(className)) return null;
+        long observerStarted = System.nanoTime();
         ArrayDeque<SpanContext> stack = SPAN_STACK.get();
         SpanContext parent = stack.peek();
-        TraceSamplingState traceSampling = parent == null ? newTraceSamplingState() : parent.traceSampling;
-        String spanId = nextId();
-        SpanContext context = new SpanContext(
-                parent == null ? TRACE_ID_PREFIX + spanId : parent.traceId,
-                spanId,
-                parent == null ? "" : parent.spanId,
-                className,
-                methodName,
-                Thread.currentThread().getName(),
-                stack.size(),
-                System.nanoTime(),
-                System.currentTimeMillis(),
-                CAPTURE_ARGUMENTS ? safeFormatArgs(allArgs) : "",
-                com.agentmonitor.model.span.SpanKind.BUSINESS, Map.of(), traceSampling);
-        stack.push(context);
-        return context;
+        InFlightSpans.Ticket invocation = InFlightSpans.enter(parent == null);
+        if (invocation == null) return null;
+        try {
+            TraceSamplingState sampling = parent == null ? newTraceSamplingState() : parent.traceSampling;
+            ValueCapture.Result captured = CAPTURE_ARGUMENTS ? ValueCapture.arguments(allArgs)
+                    : new ValueCapture.Result("", false);
+            String spanId = nextId();
+            SpanContext context = new SpanContext(parent == null ? TRACE_ID_PREFIX + spanId : parent.traceId,
+                    spanId, parent == null ? "" : parent.spanId, className, methodName,
+                    Thread.currentThread().getName(), stack.size(), System.nanoTime(), System.currentTimeMillis(),
+                    captured.text(), com.agentmonitor.model.span.SpanKind.BUSINESS,
+                    captured.truncated() ? Map.of(SpanAttribute.CAPTURE_TRUNCATED, "arguments") : Map.of(),
+                    sampling, invocation);
+            stack.push(context);
+            recordEntryOverhead(context, observerStarted);
+            return context;
+        } catch (Throwable error) {
+            invocation.close();
+            throw error;
+        }
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class)
@@ -90,10 +92,34 @@ public final class MethodSpanAdvice {
                                @Advice.Thrown Throwable thrown,
                                @Advice.Return(typing = Assigner.Typing.DYNAMIC) Object returnValue) {
         if (context == null) return;
+        long observerStarted = System.nanoTime();
+        long duration = durationNanos(context, observerStarted);
         removeContext(context);
-        long duration = System.nanoTime() - context.startNanos;
-        String retVal = thrown != null || !CAPTURE_RETURN_VALUE ? null : formatValue(returnValue);
-        complete(context, completedSpan(context, descriptor, duration, thrown, retVal, context.attributes));
+        try {
+            ValueCapture.Result returned = thrown != null || !CAPTURE_RETURN_VALUE
+                    ? new ValueCapture.Result("", false) : ValueCapture.capture(returnValue);
+            Map<String, String> attributes = new LinkedHashMap<>(context.attributes);
+            if (returned.truncated()) attributes.merge(SpanAttribute.CAPTURE_TRUNCATED, "returnValue", (a, b) -> a + "," + b);
+            complete(context, completedSpan(context, descriptor, duration, thrown, returned.text(), attributes));
+        } finally {
+            recordExitOverhead(context, observerStarted);
+            if (context.invocation != null) context.invocation.close();
+        }
+    }
+
+    public static void recordEntryOverhead(SpanContext context, long started) {
+        context.entryOverheadNanos = Math.max(0, System.nanoTime() - started);
+        context.traceSampling.addObserverNanos(context.entryOverheadNanos);
+        context.observerNanosAtStart = context.traceSampling.observerNanos();
+    }
+
+    public static void recordExitOverhead(SpanContext context, long started) {
+        context.traceSampling.addObserverNanos(Math.max(0, System.nanoTime() - started));
+    }
+
+    public static long durationNanos(SpanContext context, long ended) {
+        long nestedObserver = Math.max(0, context.traceSampling.observerNanos() - context.observerNanosAtStart);
+        return Math.max(0, ended - context.startNanos - nestedObserver);
     }
 
     public static String nextId() {
@@ -122,6 +148,9 @@ public final class MethodSpanAdvice {
                                          Throwable error, String returnValue,
                                          Map<String, String> spanAttributes) {
         Map<String, String> attributes = new LinkedHashMap<>(spanAttributes == null ? Map.of() : spanAttributes);
+        attributes.put(SpanAttribute.OBSERVER_EXCLUDED_NANOS, Long.toString(context.entryOverheadNanos
+                + Math.max(0, context.traceSampling.observerNanos() - context.observerNanosAtStart)));
+        attributes.put(SpanAttribute.SAMPLING_RATE, Integer.toString(context.traceSampling.headRatePercent()));
         String stackTrace = "";
         String statusDescription = "";
         List<SpanEventData> events = List.of();
@@ -155,18 +184,22 @@ public final class MethodSpanAdvice {
      */
     static void complete(SpanContext context, SpanData span) {
         if (context == null || span == null) return;
-        SpanExporter exporter = EXPORTER;
-        boolean rootSpan = context.parentSpanId == null || context.parentSpanId.isBlank();
-        if (exporter == null) {
-            if (rootSpan) context.traceSampling.discard();
-            return;
+        try {
+            SpanExporter exporter = EXPORTER;
+            boolean rootSpan = context.parentSpanId == null || context.parentSpanId.isBlank();
+            if (exporter == null) {
+                if (rootSpan) context.traceSampling.discard();
+                return;
+            }
+            span = SpanPayloadLimits.limit(span);
+            if (context.traceSampling.isHeadSampled()) {
+                exporter.export(context.traceSampling.annotate(span, "head"));
+                return;
+            }
+            for (SpanData completed : context.traceSampling.complete(span, rootSpan)) exporter.export(completed);
+        } finally {
+            if (context.invocation != null) context.invocation.close();
         }
-        if (context.traceSampling.isHeadSampled()) {
-            exporter.export(span);
-            return;
-        }
-        List<SpanData> promotedTrace = context.traceSampling.complete(span, rootSpan);
-        for (SpanData completedSpan : promotedTrace) exporter.export(completedSpan);
     }
 
     private static String sqlErrorType(Throwable error, String fallback) {
@@ -206,7 +239,7 @@ public final class MethodSpanAdvice {
 
     static TraceSamplingState newTraceSamplingState() {
         return new TraceSamplingState(headSampled(), nanosFromMillis(SLOW_TRACE_THRESHOLD_MILLIS),
-                TAIL_MAX_BUFFERED_SPANS, TAIL_MAX_BUFFERED_BYTES, TAIL_OVERFLOW_POLICY);
+                TAIL_MAX_BUFFERED_SPANS, TAIL_MAX_BUFFERED_BYTES, TAIL_OVERFLOW_POLICY, SAMPLING_RATE_PERCENT);
     }
 
     private static boolean headSampled() {
@@ -245,151 +278,15 @@ public final class MethodSpanAdvice {
         }
     }
 
-    public static String formatArgs(Object[] args) {
-        if (args == null || args.length == 0) return "";
-        if (args.length == 1) return toJson(args[0], SERIALIZATION_DEPTH);
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < args.length; i++) {
-            if (i > 0) sb.append(", ");
-            sb.append(toJson(args[i], SERIALIZATION_DEPTH));
-        }
-        sb.append("]");
-        return sb.toString();
-    }
+    public static String formatArgs(Object[] args) { return ValueCapture.arguments(args).text(); }
 
-    public static String safeFormatArgs(Object[] args) {
-        try {
-            return formatArgs(args);
-        } catch (Throwable error) {
-            return "{\"_serializeError\":\"" + escapeJson(error.getClass().getSimpleName()) + "\"}";
-        }
-    }
+    public static String safeFormatArgs(Object[] args) { return formatArgs(args); }
 
-    public static String formatValue(Object val) {
-        if (val == null) return "null";
-        try { return toJson(val, SERIALIZATION_DEPTH); }
-        catch (Exception e) { return "{\"_t\":\"" + val.getClass().getSimpleName() + "\"}"; }
-    }
+    public static String formatValue(Object value) { return ValueCapture.capture(value).text(); }
 
-    public static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() > max ? s.substring(0, max) + "\u2026" : s;
-    }
-
-    private static String toJson(Object val, int depth) {
-        if (val == null) return "null";
-        if (val instanceof Boolean || val instanceof Number) return val.toString();
-        if (val instanceof Character) return "\"" + val + "\"";
-        if (val instanceof String) return "\"" + escapeJson((String) val) + "\"";
-        if (isUnsafeReactorQueue(val)) return typeSummary(val);
-        if (val.getClass().isArray()) return arrayToJson(val, depth);
-        if (val instanceof Iterable) return iterableToJson((Iterable<?>) val, depth);
-        if (val instanceof Map) return mapToJson((Map<?, ?>) val, depth);
-        try {
-            String s = val.toString();
-            if (!isDefaultToString(val, s)) return "\"" + escapeJson(truncate(s, MAX_VALUE_CHARACTERS)) + "\"";
-        } catch (Exception ignored) {}
-        if (depth <= 0) return "{\"_t\":\"" + val.getClass().getSimpleName() + "\"}";
-        return pojoToJson(val, depth - 1);
-    }
-
-    private static boolean isDefaultToString(Object val, String s) {
-        return s != null && s.contains("@")
-                && (s.startsWith(val.getClass().getName()) || s.startsWith(val.getClass().getSimpleName()));
-    }
-
-    private static String pojoToJson(Object val, int depth) {
-        StringBuilder sb = new StringBuilder("{");
-        int count = 0;
-        for (Class<?> c = val.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
-            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
-                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
-                try {
-                    f.setAccessible(true);
-                    if (count > 0) sb.append(", ");
-                    sb.append("\"").append(f.getName()).append("\": ")
-                      .append(toJson(f.get(val), depth));
-                    count++;
-                } catch (Exception ignored) {}
-            }
-        }
-        return sb.append("}").toString();
-    }
-
-    private static String arrayToJson(Object arr, int depth) {
-        int len = java.lang.reflect.Array.getLength(arr);
-        if (len == 0) return "[]";
-        StringBuilder sb = new StringBuilder("[");
-        int limit = Math.min(len, MAX_ARRAY_ELEMENTS);
-        for (int i = 0; i < limit; i++) {
-            if (i > 0) sb.append(", ");
-            sb.append(depth > 0 ? toJson(java.lang.reflect.Array.get(arr, i), depth - 1) : "\"...\"");
-        }
-        if (len > MAX_ARRAY_ELEMENTS) sb.append(", \"...\"");
-        return sb.append("]").toString();
-    }
-
-    private static String iterableToJson(Iterable<?> it, int depth) {
-        StringBuilder sb = new StringBuilder("[");
-        int count = 0;
-        try {
-            for (Object elem : it) {
-                if (count > 0) sb.append(", ");
-                sb.append(depth > 0 ? toJson(elem, depth - 1) : "\"...\"");
-                count++;
-                if (count >= MAX_ARRAY_ELEMENTS) {
-                    sb.append(", \"...\"");
-                    break;
-                }
-            }
-        } catch (Throwable error) {
-            return typeSummary(it);
-        }
-        return sb.append("]").toString();
-    }
-
-    private static String mapToJson(Map<?, ?> map, int depth) {
-        StringBuilder sb = new StringBuilder("{");
-        int count = 0;
-        try {
-            for (Map.Entry<?, ?> e : map.entrySet()) {
-                if (count > 0) sb.append(", ");
-                sb.append("\"").append(escapeJson(String.valueOf(e.getKey()))).append("\": ")
-                  .append(depth > 0 ? toJson(e.getValue(), depth - 1) : "\"...\"");
-                count++;
-                if (count >= MAX_MAP_ENTRIES) {
-                    sb.append(", \"...\": \"...\"");
-                    break;
-                }
-            }
-        } catch (Throwable error) {
-            return typeSummary(map);
-        }
-        return sb.append("}").toString();
-    }
-
-    private static boolean isUnsafeReactorQueue(Object val) {
-        if (!(val instanceof Queue)) return false;
-        String name = val.getClass().getName();
-        for (Class<?> c = val.getClass(); c != null; c = c.getSuperclass()) {
-            for (Class<?> iface : c.getInterfaces()) {
-                String ifaceName = iface.getName();
-                if ("reactor.core.Fuseable$QueueSubscription".equals(ifaceName)) return true;
-                if (ifaceName.startsWith("reactor.core.") && ifaceName.contains("QueueSubscription")) return true;
-            }
-        }
-        return name.startsWith("reactor.") || name.contains("QueueSubscription");
-    }
-
-    private static String typeSummary(Object val) {
-        if (val == null) return "null";
-        return "{\"_t\":\"" + escapeJson(val.getClass().getName()) + "\"}";
-    }
-
-    private static String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"")
-                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+    public static String truncate(String value, int max) {
+        if (value == null) return "";
+        return value.length() > max ? value.substring(0, max) + "…" : value;
     }
 
     public static boolean matchesFilter(String className) {

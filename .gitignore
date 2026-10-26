@@ -11,7 +11,7 @@ build/
 # Local runtime state and distributable outputs
 agent-monitor.pid
 agent-monitor.zip
-app/
+/app/
 *.log
 *.hprof
 *.jfr

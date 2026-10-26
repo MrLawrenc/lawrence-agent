@@ -142,3 +142,62 @@ tasks.register('packageWindowsApp', Exec) {
                 '--java-options', '--add-opens=java.base/java.lang=ALL-UNNAMED'
     }
 }
+
+// Isolated UI gallery: compiles real controls against explicitly illustrative data adapters.
+// This source set is never part of the app, tests, distribution, or Agent artifacts.
+sourceSets {
+    uiPreview {
+        java.srcDirs = []
+        resources {
+            srcDir 'src/main/resources'
+            include '**/main.css', '**/icon.png'
+        }
+    }
+}
+configurations.uiPreviewImplementation.extendsFrom(configurations.implementation)
+def previewControls = ['ui/UiIcons', 'ui/AppIcons', 'ui/JvmSelectDialog', 'ui/ClassSelectionPane',
+                       'ui/CallTreePane', 'ui/JvmMetricsPane', 'model/JvmProcess', 'model/CallNode',
+                       'model/JvmMetrics']
+tasks.named('compileUiPreviewJava', JavaCompile) {
+    source = files(previewControls.collect { "src/main/java/com/agentmonitor/app/${it}.java" },
+                   fileTree("${rootDir}/scripts/ui-preview") { include '**/*.java' })
+}
+tasks.register('uiPreview', JavaExec) {
+    group = 'application'
+    description = 'Opens the UI gallery using fixture data, without attaching to any JVM.'
+    dependsOn tasks.named('uiPreviewClasses')
+    classpath = sourceSets.uiPreview.runtimeClasspath
+    mainClass = 'com.agentmonitor.app.ui.UIWorkbenchPreview'
+    doFirst {
+        jvmArgs '--module-path', configurations.uiPreviewRuntimeClasspath.files
+                .findAll { it.name.startsWith('javafx-') }.collect { it.absolutePath }.join(File.pathSeparator),
+                '--add-modules', 'javafx.controls'
+    }
+}
+
+// Independent Agent protocol check and full desktop-service pipeline check against explicit PIDs.
+sourceSets {
+    liveSmoke { java.srcDir "${rootDir}/scripts/live-smoke" }
+}
+tasks.register('desktopSmoke', JavaExec) {
+    group = 'verification'
+    description = 'Verifies the production desktop attach, report, and replay pipeline against an explicit JVM PID.'
+    dependsOn tasks.named('liveSmokeClasses'), tasks.named('classes')
+    classpath = sourceSets.liveSmoke.runtimeClasspath + sourceSets.main.runtimeClasspath
+    mainClass = 'com.agentmonitor.tools.DesktopSmoke'
+    jvmArgs '--add-modules', 'jdk.attach'
+}
+tasks.named('compileLiveSmokeJava', JavaCompile) {
+    classpath += sourceSets.main.output
+    dependsOn tasks.named('classes')
+}
+configurations.liveSmokeImplementation.extendsFrom(configurations.implementation)
+tasks.register('attachSmoke', JavaExec) {
+    group = 'verification'
+    description = 'Runs a bounded, exact-class attach check against an explicitly supplied real JVM PID.'
+    dependsOn tasks.named('liveSmokeClasses'), project(':monitor-agent').tasks.named('agentJar')
+    classpath = sourceSets.liveSmoke.runtimeClasspath
+    mainClass = 'com.agentmonitor.tools.AttachSmoke'
+    jvmArgs '--add-modules', 'jdk.attach'
+    systemProperty 'agent.monitor.smoke.jar', project(':monitor-agent').layout.buildDirectory.file('libs/monitor-agent.jar').get().asFile.absolutePath
+}

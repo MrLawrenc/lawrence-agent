@@ -72,6 +72,24 @@ class AgentClassLoadingIntegrationTest {
         }
     }
 
+    @Test
+    void stoppingARealInFlightMethodMarksBothTheAckAndRawManifestIncomplete() throws Exception {
+        Path agentJar = Path.of("build", "libs", "monitor-agent.jar").toAbsolutePath().normalize();
+        Path testClasses = Path.of("build", "classes", "java", "test").toAbsolutePath().normalize();
+        Path output = Files.createTempDirectory("agent-monitor-stop-test-");
+        Path session = output.resolve("session");
+        String arguments = "pkg=agentfixtures.,exporters=file,fileDir=" + output + ",fileSessionDir=" + session
+                + ",captureArgs=false,captureReturnValue=false,samplingRate=100";
+        String result = runProbe(agentJar, testClasses, List.of(arguments), true);
+        assertTrue(result.contains("stop-restored=true"), result);
+        assertTrue(result.contains("stop-output-drained=false"), result);
+        var manifest = new com.fasterxml.jackson.databind.ObjectMapper().readTree(session.resolve("manifest.json").toFile());
+        assertEquals("completed", manifest.path("status").asText(), "File closure is distinct from capture completeness");
+        assertFalse(manifest.path("captureComplete").asBoolean(true));
+        assertEquals(1, manifest.path("interruptedRootCalls").asLong());
+        assertTrue(manifest.path("pendingInvocationsAtStop").asLong() >= 1);
+    }
+
     private static void assertThinOuterArtifact(Path agentJar) throws Exception {
         try (JarFile jar = new JarFile(agentJar.toFile())) {
             assertTrue(jar.getJarEntry("agent/monitor-bootstrap-bridge.jar") != null);
@@ -84,12 +102,19 @@ class AgentClassLoadingIntegrationTest {
     }
 
     private static String runProbe(Path agentJar, Path testClasses, List<String> agentArguments) throws Exception {
+        return runProbe(agentJar, testClasses, agentArguments, false);
+    }
+
+    private static String runProbe(Path agentJar, Path testClasses, List<String> agentArguments,
+                                   boolean stopInFlight) throws Exception {
         List<String> command = new ArrayList<>();
-        command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+        command.add(System.getProperty("agent.monitor.probe.java",
+                Path.of(System.getProperty("java.home"), "bin", "java").toString()));
         for (String arguments : agentArguments) command.add("-javaagent:" + agentJar + '=' + arguments);
         command.add("-cp");
         command.add(testClasses.toString());
         command.add(AgentPremainProbe.class.getName());
+        if (stopInFlight) command.add("--stop-in-flight");
         Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
         String childOutput = readFully(process.getInputStream());
         assertTrue(process.waitFor(PROCESS_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS),

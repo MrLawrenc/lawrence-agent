@@ -6,6 +6,7 @@ import java.util.Map;
 
 import com.agentmonitor.model.span.SpanAttribute;
 import com.agentmonitor.model.span.SpanKind;
+import com.agentmonitor.agent.protocol.SpanPayloadLimits;
 
 /** Builds standard Servlet server spans without linking the Agent to either Servlet API namespace. */
 public final class DependencySpanSupport {
@@ -15,7 +16,8 @@ public final class DependencySpanSupport {
     private DependencySpanSupport() { }
 
     public static Context enter(String className, String methodName, Object target, Object[] arguments) {
-        if (!MethodSpanAdvice.ACTIVE) return null;
+        if (!MethodSpanAdvice.ACTIVE || ValueCapture.active()) return null;
+        long observerStarted = System.nanoTime();
         SpanKind kind = kindOf(arguments);
         if (kind == null || !enabled(kind)) return null;
         SpanContext parent = MethodSpanAdvice.SPAN_STACK.get().peek();
@@ -24,34 +26,49 @@ public final class DependencySpanSupport {
         // than creating a row of synthetic HTTP-server spans.
         if (kind == SpanKind.HTTP_SERVER && parent != null) return null;
 
-        long startNanos = System.nanoTime();
-        long startedAt = System.currentTimeMillis();
-        String traceId = parent == null ? "trace-" + MethodSpanAdvice.nextId() : parent.traceId;
-        String spanId = MethodSpanAdvice.nextId();
-        TraceSamplingState traceSampling = parent == null
-                ? MethodSpanAdvice.newTraceSamplingState()
-                : parent.traceSampling;
-        Map<String, String> attributes = attributes(kind, className, methodName, target, arguments);
-        SpanContext span = new SpanContext(traceId, spanId, parent == null ? "" : parent.spanId,
-                dependencyClass(kind), dependencyMethod(kind, methodName, attributes), Thread.currentThread().getName(),
-                parent == null ? 0 : parent.depth + 1, startNanos, startedAt, "", kind, attributes,
-                traceSampling);
-        MethodSpanAdvice.SPAN_STACK.get().push(span);
-        return new Context(span, new LinkedHashMap<>(attributes));
+        InFlightSpans.Ticket invocation = InFlightSpans.enter(parent == null);
+        if (invocation == null) return null;
+        try {
+            String traceId = parent == null ? "trace-" + MethodSpanAdvice.nextId() : parent.traceId;
+            String spanId = MethodSpanAdvice.nextId();
+            TraceSamplingState traceSampling = parent == null
+                    ? MethodSpanAdvice.newTraceSamplingState()
+                    : parent.traceSampling;
+            Map<String, String> attributes = SpanPayloadLimits.attributes(ValueCapture.suppress(() -> attributes(kind, className, methodName, target, arguments)));
+            SpanContext span = new SpanContext(traceId, spanId, parent == null ? "" : parent.spanId,
+                    dependencyClass(kind), dependencyMethod(kind, methodName, attributes), Thread.currentThread().getName(),
+                    parent == null ? 0 : parent.depth + 1, System.nanoTime(), System.currentTimeMillis(), "", kind, attributes,
+                    traceSampling, invocation);
+            MethodSpanAdvice.SPAN_STACK.get().push(span);
+            MethodSpanAdvice.recordEntryOverhead(span, observerStarted);
+            return new Context(span, new LinkedHashMap<>(attributes));
+        } catch (Throwable error) {
+            invocation.close();
+            throw error;
+        }
     }
 
     public static void exit(Context context, Object target, Object[] arguments, Object result, Throwable error) {
         if (context == null) return;
+        long observerStarted = System.nanoTime();
+        long duration = MethodSpanAdvice.durationNanos(context.span(), observerStarted);
         MethodSpanAdvice.removeContext(context.span());
-        completeAttributes(context.attributes(), context.span().kind, target, arguments, result);
-        long duration = Math.max(0, System.nanoTime() - context.span().startNanos);
-        boolean statusFailure = error == null && isHttpServerFailure(context.attributes());
-        String responseStatus = context.attributes().getOrDefault(SpanAttribute.HTTP_RESPONSE_STATUS_CODE,
-                context.attributes().getOrDefault(SpanAttribute.STATUS_CODE, "unknown"));
-        if (statusFailure) context.attributes().put(SpanAttribute.ERROR_TYPE, responseStatus);
-        Throwable effectiveError = statusFailure ? new HttpStatusException(responseStatus) : error;
-        MethodSpanAdvice.complete(context.span(), MethodSpanAdvice.completedSpan(context.span(), "", duration,
-                effectiveError, "", context.attributes()));
+        try {
+            ValueCapture.suppress(() -> {
+                completeAttributes(context.attributes(), context.span().kind, target, arguments, result);
+                return null;
+            });
+            boolean statusFailure = error == null && isHttpServerFailure(context.attributes());
+            String responseStatus = context.attributes().getOrDefault(SpanAttribute.HTTP_RESPONSE_STATUS_CODE,
+                    context.attributes().getOrDefault(SpanAttribute.STATUS_CODE, "unknown"));
+            if (statusFailure) context.attributes().put(SpanAttribute.ERROR_TYPE, responseStatus);
+            Throwable effectiveError = statusFailure ? new HttpStatusException(responseStatus) : error;
+            MethodSpanAdvice.complete(context.span(), MethodSpanAdvice.completedSpan(context.span(), "", duration,
+                    effectiveError, "", context.attributes()));
+        } finally {
+            MethodSpanAdvice.recordExitOverhead(context.span(), observerStarted);
+            if (context.span().invocation != null) context.span().invocation.close();
+        }
     }
 
     private static boolean enabled(SpanKind kind) {

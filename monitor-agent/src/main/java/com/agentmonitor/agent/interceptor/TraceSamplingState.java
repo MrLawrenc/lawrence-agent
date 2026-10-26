@@ -2,6 +2,8 @@ package com.agentmonitor.agent.interceptor;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashMap;
+import com.agentmonitor.model.span.SpanAttribute;
 
 import com.agentmonitor.agent.model.SpanData;
 import com.agentmonitor.model.config.MonitoringConfig;
@@ -23,10 +25,12 @@ public final class TraceSamplingState {
     private final boolean headSampled;
     private final long slowThresholdNanos;
     private final int maxBufferedSpans;
-    private final int maxBufferedCharacters;
+    private final int maxBufferedBytes;
     private final TailOverflowPolicy overflowPolicy;
     private final List<SpanData> bufferedSpans;
-    private int bufferedCharacters;
+    private long bufferedBytes;
+    private long observerNanos;
+    private final int headRatePercent;
     private boolean containsError;
     private boolean overflowed;
     private boolean promoted;
@@ -38,11 +42,18 @@ public final class TraceSamplingState {
     }
 
     TraceSamplingState(boolean headSampled, long slowThresholdNanos, int maxBufferedSpans,
-                       int maxBufferedCharacters, TailOverflowPolicy overflowPolicy) {
+                       int maxBufferedBytes, TailOverflowPolicy overflowPolicy) {
+        this(headSampled, slowThresholdNanos, maxBufferedSpans, maxBufferedBytes, overflowPolicy,
+                headSampled ? 100 : 0);
+    }
+
+    TraceSamplingState(boolean headSampled, long slowThresholdNanos, int maxBufferedSpans,
+                       int maxBufferedBytes, TailOverflowPolicy overflowPolicy, int headRatePercent) {
+        this.headRatePercent = headRatePercent;
         this.headSampled = headSampled;
         this.slowThresholdNanos = Math.max(0, slowThresholdNanos);
         this.maxBufferedSpans = Math.max(1, maxBufferedSpans);
-        this.maxBufferedCharacters = Math.max(1, maxBufferedCharacters);
+        this.maxBufferedBytes = Math.max(1, maxBufferedBytes);
         this.overflowPolicy = overflowPolicy == null ? MonitoringConfig.DEFAULT_TAIL_OVERFLOW_POLICY : overflowPolicy;
         this.bufferedSpans = headSampled ? NO_SPANS : new ArrayList<>();
     }
@@ -60,12 +71,12 @@ public final class TraceSamplingState {
      */
     synchronized List<SpanData> complete(SpanData span, boolean rootSpan) {
         if (headSampled || span == null) return NO_SPANS;
-        if (promoted) return List.of(span);
+        if (promoted) return List.of(annotate(span, "tail_overflow"));
         if (overflowed) return NO_SPANS;
 
-        int size = estimatedCharacters(span);
+        long size = estimatedBytes(span);
         if (bufferedSpans.size() >= maxBufferedSpans
-                || size > maxBufferedCharacters - bufferedCharacters) {
+                || size > maxBufferedBytes - bufferedBytes) {
             overflowed = true;
             if (overflowPolicy == TailOverflowPolicy.PROMOTE) {
                 // The completed portion is ordered exactly like an ordinary tail promotion
@@ -75,17 +86,17 @@ public final class TraceSamplingState {
                 promotedTrace.addAll(bufferedSpans);
                 promotedTrace.add(span);
                 bufferedSpans.clear();
-                bufferedCharacters = 0;
+                bufferedBytes = 0;
                 promoted = true;
-                return List.copyOf(promotedTrace);
+                return promotedTrace.stream().map(value -> annotate(value, "tail_overflow")).toList();
             }
             // DROP is an explicit opt-in for strict bounded tail sampling.
             bufferedSpans.clear();
-            bufferedCharacters = 0;
+            bufferedBytes = 0;
             return NO_SPANS;
         }
         bufferedSpans.add(span);
-        bufferedCharacters += size;
+        bufferedBytes += size;
         containsError |= span.status().isError();
 
         if (!rootSpan) return NO_SPANS;
@@ -94,14 +105,15 @@ public final class TraceSamplingState {
             discard();
             return NO_SPANS;
         }
-        List<SpanData> result = List.copyOf(bufferedSpans);
+        String reason = containsError ? "tail_error" : "tail_slow";
+        List<SpanData> result = bufferedSpans.stream().map(value -> annotate(value, reason)).toList();
         discard();
         return result;
     }
 
     synchronized void discard() {
         if (!headSampled) bufferedSpans.clear();
-        bufferedCharacters = 0;
+        bufferedBytes = 0;
     }
 
     boolean overflowed() {
@@ -112,19 +124,32 @@ public final class TraceSamplingState {
         return promoted;
     }
 
-    private int estimatedCharacters(SpanData span) {
-        long count = length(span.traceId()) + length(span.spanId()) + length(span.parentSpanId())
-                + length(span.className()) + length(span.methodName()) + length(span.signature())
-                + length(span.threadName()) + length(span.arguments()) + length(span.returnValue())
-                + length(span.stackTrace()) + 128L;
-        for (var attribute : span.attributes().entrySet()) {
-            count += length(attribute.getKey()) + length(attribute.getValue()) + 8L;
-            if (count >= maxBufferedCharacters) return maxBufferedCharacters;
-        }
-        return (int) Math.min(maxBufferedCharacters, count);
+    public synchronized long observerNanos() { return observerNanos; }
+    public synchronized void addObserverNanos(long nanos) { observerNanos += nanos; }
+    public int headRatePercent() { return headRatePercent; }
+
+    SpanData annotate(SpanData span, String reason) {
+        var attributes = new LinkedHashMap<>(span.attributes());
+        attributes.put(SpanAttribute.SAMPLING_REASON, reason);
+        attributes.put(SpanAttribute.SAMPLING_RATE, Integer.toString(headRatePercent));
+        return new SpanData(span.traceId(), span.spanId(), span.parentSpanId(), span.className(), span.methodName(),
+                span.signature(), span.threadName(), span.depth(), span.startedAtEpochMillis(), span.durationNanos(),
+                span.status(), span.arguments(), span.returnValue(), span.stackTrace(), span.kind(), attributes,
+                span.statusDescription(), span.events());
     }
 
-    private static int length(String value) {
-        return value == null ? 0 : value.length();
+    /** Conservative retained UTF-16 size, including event metadata; never clamp to the budget. */
+    private long estimatedBytes(SpanData span) {
+        long count = 256 + bytes(span.traceId()) + bytes(span.spanId()) + bytes(span.parentSpanId())
+                + bytes(span.className()) + bytes(span.methodName()) + bytes(span.signature())
+                + bytes(span.threadName()) + bytes(span.arguments()) + bytes(span.returnValue())
+                + bytes(span.stackTrace()) + bytes(span.statusDescription());
+        for (var attribute : span.attributes().entrySet()) count += 64 + bytes(attribute.getKey()) + bytes(attribute.getValue());
+        for (var event : span.events()) {
+            count += 64 + bytes(event.name());
+            for (var attribute : event.attributes().entrySet()) count += 64 + bytes(attribute.getKey()) + bytes(attribute.getValue());
+        }
+        return count;
     }
+    private static long bytes(String value) { return value == null ? 0 : 32L + 2L * value.length(); }
 }

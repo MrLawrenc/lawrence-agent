@@ -5,6 +5,12 @@ public final class IsolatedBusiness {
 
     private IsolatedBusiness() { }
 
+    public static void block(java.util.concurrent.CountDownLatch entered,
+                             java.util.concurrent.CountDownLatch release) throws InterruptedException {
+        entered.countDown();
+        release.await();
+    }
+
     public static String execute(String value) {
         return "processed:" + value;
     }

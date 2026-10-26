@@ -17,7 +17,7 @@ if [[ -f "$PID_FILE" ]]; then
     rm -f "$PID_FILE"
 fi
 
-./gradlew :monitor-app:run &
+./gradlew --console=plain :monitor-app:run < /dev/null &
 app_pid=$!
 printf '%s\n' "$app_pid" > "$PID_FILE"
 

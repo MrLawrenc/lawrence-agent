@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import com.agentmonitor.agent.log.AgentLog;
 import com.agentmonitor.agent.model.SpanData;
+import com.agentmonitor.agent.protocol.SpanPayloadLimits;
 import com.agentmonitor.model.output.ExporterStatistics;
 
 /** Decorator pattern: moves serialization and destination I/O behind a bounded queue. */
@@ -54,6 +55,7 @@ public final class AsyncSpanExporter implements SpanExporter {
 
     @Override
     public ExportResult export(SpanData span) {
+        span = SpanPayloadLimits.limit(span);
         synchronized (lifecycleLock) {
             // STOP closes admission before waiting for the queue. Keeping admission and offer in
             // one critical section establishes a finite queue boundary for drain().
@@ -100,6 +102,7 @@ public final class AsyncSpanExporter implements SpanExporter {
         }
         ExporterDrainResult result;
         try {
+            delegate.captureQuality(statistics());
             result = delegate.drain(remainingMillis);
         } catch (Throwable error) {
             return completeDrain(failure(describe(error)));

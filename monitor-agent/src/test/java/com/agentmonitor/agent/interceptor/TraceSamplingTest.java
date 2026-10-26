@@ -21,6 +21,7 @@ class TraceSamplingTest {
 
     @BeforeEach
     void setUp() {
+        InFlightSpans.startSession();
         MethodSpanAdvice.ACTIVE = true;
         MethodSpanAdvice.EXPORTER = exporter;
         MethodSpanAdvice.PKG_FILTERS = new String[] { "example." };
@@ -80,6 +81,7 @@ class TraceSamplingTest {
         assertEquals(List.of(child.spanId, root.spanId), exporter.spans.stream().map(SpanData::spanId).toList());
         assertEquals(root.traceId, exporter.spans.get(0).traceId());
         assertEquals(root.spanId, exporter.spans.get(0).parentSpanId());
+        assertEquals("tail_slow", exporter.spans.get(0).attributes().get(com.agentmonitor.model.span.SpanAttribute.SAMPLING_REASON));
     }
 
     @Test
@@ -161,6 +163,39 @@ class TraceSamplingTest {
 
         MethodSpanAdvice.EXCL_CLS_FILTERS = new String[] { "example.StandaloneService" };
         assertFalse(MethodSpanAdvice.matchesFilter("example.StandaloneService"));
+    }
+
+    @Test
+    void aSingleOversizedSpanCannotBypassTheDropBudget() {
+        TraceSamplingState state = new TraceSamplingState(false, 0, 10, 1024, TailOverflowPolicy.DROP);
+        SpanContext context = new SpanContext("trace", "root", "", "Service", "work", "test", 0,
+                0, 0, "x".repeat(2_000_000));
+        assertTrue(state.complete(completed(context, 1, false), true).isEmpty());
+        assertTrue(state.overflowed());
+        assertFalse(state.promoted());
+    }
+
+    @Test
+    void attributesAndExceptionEventsAlsoCountAgainstTheTailBudget() {
+        TraceSamplingState state = new TraceSamplingState(false, 0, 10, 1024, TailOverflowPolicy.DROP);
+        SpanData span = new SpanData("trace", "span", "", "Service", "work", "()V", "test", 0, 0, 1,
+                com.agentmonitor.agent.model.SpanStatus.ERROR, "", "", "", com.agentmonitor.model.span.SpanKind.BUSINESS,
+                java.util.Map.of(), "", List.of(new com.agentmonitor.agent.model.SpanEventData("exception", 0,
+                        java.util.Map.of("stack", "x".repeat(10000)))));
+        assertTrue(state.complete(span, true).isEmpty());
+        assertTrue(state.overflowed());
+    }
+
+    @Test
+    void aSingleOversizedSpanPromotesWithAnExplicitReason() {
+        TraceSamplingState state = new TraceSamplingState(false, 0, 10, 1024, TailOverflowPolicy.PROMOTE, 10);
+        SpanContext context = new SpanContext("trace", "root", "", "Service", "work", "test", 0,
+                0, 0, "x".repeat(2000));
+        List<SpanData> spans = state.complete(completed(context, 1, false), true);
+        assertTrue(state.overflowed());
+        assertTrue(state.promoted());
+        assertEquals("tail_overflow", spans.get(0).attributes().get(com.agentmonitor.model.span.SpanAttribute.SAMPLING_REASON));
+        assertEquals("10", spans.get(0).attributes().get(com.agentmonitor.model.span.SpanAttribute.SAMPLING_RATE));
     }
 
     private static SpanData completed(SpanContext context, long durationNanos, boolean error) {

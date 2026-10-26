@@ -22,11 +22,12 @@ sourceSets {
 
 dependencies {
     implementation project(':monitor-model')
-    implementation 'net.bytebuddy:byte-buddy:1.14.12'
+    implementation 'net.bytebuddy:byte-buddy:1.18.7'
     implementation 'io.netty:netty-codec:4.1.135.Final'
     implementation 'io.netty:netty-handler:4.1.135.Final'
     implementation 'io.netty:netty-transport:4.1.135.Final'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
 }
 
 // Core code compiles against the tiny bridge, but the bridge is intentionally not copied into
@@ -46,6 +47,9 @@ sourceSets.test.runtimeClasspath += sourceSets.bootstrap.output
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
     dependsOn tasks.named('agentJar')
+    if (providers.gradleProperty('probeJava').isPresent()) {
+        systemProperty 'agent.monitor.probe.java', providers.gradleProperty('probeJava').get()
+    }
 }
 
 // This is the isolated runtime payload.  It contains all Agent implementation classes and all

@@ -17,6 +17,7 @@ import com.agentmonitor.agent.exporter.ExporterDrainResult;
 import com.agentmonitor.agent.exporter.SpanExporter;
 import com.agentmonitor.agent.exporter.SpanExporterFactory;
 import com.agentmonitor.agent.interceptor.MethodSpanAdvice;
+import com.agentmonitor.agent.interceptor.InFlightSpans;
 import com.agentmonitor.agent.interceptor.BridgeMethodAdvice;
 import com.agentmonitor.agent.interceptor.DependencySpanAdvice;
 import com.agentmonitor.agent.interceptor.DependencySpanSupport;
@@ -44,6 +45,7 @@ public class AgentMain {
 
     private static final long INSTALL_STOP_TIMEOUT_MILLIS = 3_000;
     private static final long STOP_EXPORTER_DRAIN_TIMEOUT_MILLIS = 3_000;
+    private static final long STOP_INVOCATION_WAIT_MILLIS = 500;
     private static final int RETRANSFORMATION_BATCH_SIZE = 64;
     private static final Set<String> ACCESSOR_METHOD_PATTERNS = Set.of("get*", "is*", "set*");
     private static final Set<String> ENTRY_CLASS_SUFFIXES = Set.of(
@@ -120,6 +122,7 @@ public class AgentMain {
             AgentLog.close();
             throw new IllegalStateException("没有可用的 Trace 导出器");
         }
+        InFlightSpans.startSession();
         MethodSpanAdvice.EXPORTER = exporter;
         MethodSpanAdvice.ACTIVE = false;
         MethodSpanAdvice.CAPTURE_ARGUMENTS = config.isCaptureArguments();
@@ -243,6 +246,7 @@ public class AgentMain {
                         .or(ElementMatchers.named("executeBatch"))
                         .or(ElementMatchers.named("executeLargeBatch"))
                         .or(ElementMatchers.named("addBatch"))
+                        .or(ElementMatchers.named("clearBatch"))
                         .or(ElementMatchers.named("clearParameters"))
                         .or(ElementMatchers.named("close"))
                         .or(ElementMatchers.nameStartsWith("set")
@@ -394,12 +398,15 @@ public class AgentMain {
 
     public static DetachResult detach(Consumer<DetachResult> beforeExporterClose) {
         synchronized (DETACH_LOCK) {
+            STOP_REQUESTED.set(true);
+            MethodSpanAdvice.ACTIVE = false;
+            InFlightSpans.Boundary boundary = InFlightSpans.stopAndAwait(STOP_INVOCATION_WAIT_MILLIS);
             DetachResult restoredResult = restoreClasses();
             if (restoredResult.restored()) {
-                // Admission is closed only after reset succeeds. Any invocation that was already
-                // in flight can still attempt to export, but is counted as a bounded-stop drop
-                // once the async exporter establishes this finite queue boundary.
-                DetachResult result = combineWithOutputDrain(restoredResult, drainExporter());
+                // Existing exits have a bounded opportunity to publish their roots. The Bridge
+                // already blocked new entries, so a trace crossing STOP may have missing children
+                // even when its root finishes during the wait. Never label that capture complete.
+                DetachResult result = combineWithOutputDrain(restoredResult, drainExporter(boundary));
                 // The Bridge becomes terminal before STOPPED is written, but retains its detach
                 // gate until the outer transaction returns. A fast reattach therefore cannot
                 // cross the exporter/loader teardown boundary.
@@ -424,9 +431,6 @@ public class AgentMain {
         MethodSpanAdvice.EXCL_PKG_FILTERS  = new String[0];
         MethodSpanAdvice.EXCL_CLS_FILTERS  = new String[0];
         MethodSpanAdvice.EXCL_REGEX_FILTERS = new String[0];
-        MethodSpanAdvice.CAPTURE_ARGUMENTS = true;
-        MethodSpanAdvice.CAPTURE_RETURN_VALUE = true;
-        JdbcSpanSupport.CAPTURE_PARAMETERS = true;
         Thread it;
         synchronized (TRANSFORMER_LOCK) {
             it = installThread;
@@ -507,6 +511,27 @@ public class AgentMain {
      * barrier. The Netty leaf keeps its control socket open solely for the eventual ACK.
      */
     private static ExporterDrainResult drainExporter() {
+        return drainExporter(InFlightSpans.stopAndAwait(0));
+    }
+
+    private static ExporterDrainResult drainExporter(InFlightSpans.Boundary boundary) {
+        ExporterDrainResult result = drainQueuedOutput();
+        return captureDrainResult(result, boundary);
+    }
+
+    /** Keeps capture completeness separate from a successfully flushed exporter queue. */
+    static ExporterDrainResult captureDrainResult(ExporterDrainResult result, InFlightSpans.Boundary boundary) {
+        boolean lostOutput = result.droppedSpans() > 0 || result.rejectedDestinations() > 0;
+        if (boundary.complete() && (!lostOutput || !result.drained())) return result;
+        String detail = boundary.complete() ? "输出队列曾发生丢弃或目标端拒绝，采集数据不完整"
+                : "STOP 边界有 " + boundary.interruptedRoots() + " 条在途根调用，链路可能被截断；"
+                + "等待结束后仍有 " + boundary.pendingInvocations() + " 个调用未完成";
+        if (!result.detail().isBlank()) detail += "；" + result.detail();
+        return ExporterDrainResult.failed(result.pendingSpans() + boundary.pendingInvocations(),
+                result.droppedSpans(), result.rejectedDestinations(), detail);
+    }
+
+    private static ExporterDrainResult drainQueuedOutput() {
         SpanExporter exporter = MethodSpanAdvice.EXPORTER;
         if (exporter == null) return ExporterDrainResult.success();
         try {
@@ -541,7 +566,7 @@ public class AgentMain {
         if (drainResult == null) return snapshot;
         return new ExporterStatistics(true, snapshot.enqueuedSpans(), snapshot.queueDroppedSpans(),
                 snapshot.deliveryDroppedSpans(),
-                snapshot.rejectedDestinations() + drainResult.rejectedDestinations(),
+                Math.max(snapshot.rejectedDestinations(), drainResult.rejectedDestinations()),
                 Math.max(snapshot.pendingSpans(), drainResult.pendingSpans()));
     }
 

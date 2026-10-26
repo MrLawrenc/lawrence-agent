@@ -3,6 +3,14 @@ package com.agentmonitor.model.span;
 /** Shared, JSON-safe names for safe dependency metadata carried on a completed Span. */
 public final class SpanAttribute {
 
+    public static final String CAPTURE_TRUNCATED = "agent.capture.truncated";
+    public static final String PAYLOAD_TRUNCATED = "agent.payload.truncated";
+    public static final String OBSERVER_EXCLUDED_NANOS = "agent.observer.excluded.nanos";
+    public static final String SAMPLING_REASON = "agent.sampling.reason";
+    public static final String SAMPLING_RATE = "agent.sampling.head_rate_percent";
+    public static final String BATCH_PARAMETER_SAMPLES = "agent.db.batch.parameter_samples";
+    public static final String BATCH_PARAMETERS_TRUNCATED = "agent.db.batch.parameters_truncated";
+
     public static final String DEPENDENCY_TYPE = "dependencyType";
     public static final String DATASOURCE_NAME = "datasourceName";
     public static final String MAPPER_ID = "mapperId";

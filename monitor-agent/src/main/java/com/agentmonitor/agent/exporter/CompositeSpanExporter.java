@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.agentmonitor.agent.log.AgentLog;
 import com.agentmonitor.agent.model.SpanData;
+import com.agentmonitor.model.output.ExporterStatistics;
 
 /** Composite pattern: fans a span out to every configured and healthy destination. */
 final class CompositeSpanExporter implements SpanExporter {
@@ -46,6 +47,11 @@ final class CompositeSpanExporter implements SpanExporter {
             }
         }
         return result;
+    }
+
+    @Override
+    public void captureQuality(ExporterStatistics statistics) {
+        for (SpanExporter exporter : activeExporters) exporter.captureQuality(statistics);
     }
 
     @Override

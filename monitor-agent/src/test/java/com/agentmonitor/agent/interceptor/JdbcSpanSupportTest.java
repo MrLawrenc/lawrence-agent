@@ -19,6 +19,7 @@ class JdbcSpanSupportTest {
 
     @BeforeEach
     void setUp() {
+        InFlightSpans.startSession();
         JdbcSpanSupport.ENABLED = true;
         JdbcSpanSupport.CAPTURE_PARAMETERS = true;
         MethodSpanAdvice.ACTIVE = true;
@@ -105,6 +106,66 @@ class JdbcSpanSupportTest {
         assertEquals("select * from orders where customer_id = ?",
                 execution.attributes().get(SpanAttribute.SQL));
         assertFalse(execution.attributes().containsKey(SpanAttribute.SQL_PARAMETERS));
+    }
+
+    @Test
+    void recordsActualBatchCountSeparatelyFromTheLastTwentyParameterSamples() {
+        Object statement = prepared();
+        addBatches(statement, 25);
+        MethodSpanAdvice.SPAN_STACK.get().push(businessRoot());
+        var batch = JdbcSpanSupport.enter("executeBatch", statement, new Object[0]);
+        assertEquals("25", batch.attributes().get(SpanAttribute.DB_OPERATION_BATCH_SIZE));
+        assertEquals("20", batch.attributes().get(SpanAttribute.BATCH_PARAMETER_SAMPLES));
+        assertEquals("true", batch.attributes().get(SpanAttribute.BATCH_PARAMETERS_TRUNCATED));
+        assertEquals(20, batch.attributes().get(SpanAttribute.SQL_PARAMETERS).split("\\{", -1).length - 1);
+        JdbcSpanSupport.exit(batch, null);
+        var next = JdbcSpanSupport.enter("executeBatch", statement, new Object[0]);
+        assertFalse(next.attributes().containsKey(SpanAttribute.DB_OPERATION_BATCH_SIZE));
+        JdbcSpanSupport.exit(next, null);
+    }
+
+    @Test
+    void batchCountDoesNotDependOnCapturingParameterValues() {
+        JdbcSpanSupport.CAPTURE_PARAMETERS = false;
+        Object statement = prepared();
+        addBatches(statement, 30);
+        MethodSpanAdvice.SPAN_STACK.get().push(businessRoot());
+        var batch = JdbcSpanSupport.enter("executeBatch", statement, new Object[0]);
+        assertEquals("30", batch.attributes().get(SpanAttribute.DB_OPERATION_BATCH_SIZE));
+        assertEquals("0", batch.attributes().get(SpanAttribute.BATCH_PARAMETER_SAMPLES));
+        assertFalse(batch.attributes().containsKey(SpanAttribute.SQL_PARAMETERS));
+        JdbcSpanSupport.exit(batch, null);
+    }
+
+    @Test
+    void clearBatchResetsTheCountButNonBatchExecutionDoesNot() {
+        Object statement = prepared();
+        addBatches(statement, 3);
+        MethodSpanAdvice.SPAN_STACK.get().push(businessRoot());
+        var query = JdbcSpanSupport.enter("executeUpdate", statement, new Object[0]);
+        assertFalse(query.attributes().containsKey(SpanAttribute.DB_OPERATION_BATCH_SIZE));
+        JdbcSpanSupport.exit(query, null);
+        var batch = JdbcSpanSupport.enter("executeBatch", statement, new Object[0]);
+        assertEquals("3", batch.attributes().get(SpanAttribute.DB_OPERATION_BATCH_SIZE));
+        JdbcSpanSupport.exit(batch, null);
+        addBatches(statement, 5);
+        JdbcSpanSupport.exit(JdbcSpanSupport.enter("clearBatch", statement, new Object[0]), null);
+        var empty = JdbcSpanSupport.enter("executeBatch", statement, new Object[0]);
+        assertFalse(empty.attributes().containsKey(SpanAttribute.DB_OPERATION_BATCH_SIZE));
+        JdbcSpanSupport.exit(empty, null);
+    }
+
+    private static Object prepared() {
+        Object statement = new Object();
+        JdbcSpanSupport.onStatementCreated("prepareStatement", null,
+                new Object[]{"insert into orders(id) values (?)"}, statement);
+        return statement;
+    }
+    private static void addBatches(Object statement, int count) {
+        for (int i = 0; i < count; i++) {
+            JdbcSpanSupport.exit(JdbcSpanSupport.enter("setInt", statement, new Object[]{1, i}), null);
+            JdbcSpanSupport.exit(JdbcSpanSupport.enter("addBatch", statement, new Object[0]), null);
+        }
     }
 
     private static SpanContext businessRoot() {

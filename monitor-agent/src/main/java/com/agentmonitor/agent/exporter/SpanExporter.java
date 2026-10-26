@@ -1,6 +1,7 @@
 package com.agentmonitor.agent.exporter;
 
 import com.agentmonitor.agent.model.SpanData;
+import com.agentmonitor.model.output.ExporterStatistics;
 
 public interface SpanExporter extends AutoCloseable {
 
@@ -12,6 +13,9 @@ public interface SpanExporter extends AutoCloseable {
 
     /** Strategy operation: exports one domain span without exposing transport details. */
     ExportResult export(SpanData span);
+
+    /** Final upstream loss snapshot, delivered before leaf manifests are finalized. */
+    default void captureQuality(ExporterStatistics statistics) { }
 
     default void ready() {
         // Only live outputs need the instrumentation-ready signal.
