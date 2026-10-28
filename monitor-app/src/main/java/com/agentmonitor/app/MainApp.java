@@ -1,10 +1,10 @@
 package com.agentmonitor.app;
 
 import com.agentmonitor.app.controller.MainController;
-import com.agentmonitor.app.model.JvmProcess;
+import com.agentmonitor.model.jvm.JvmProcess;
 import com.agentmonitor.app.ui.AppIcons;
 import com.agentmonitor.app.ui.JvmSelectDialog;
-import com.agentmonitor.app.util.AppLog;
+import com.agentmonitor.core.util.AppLog;
 
 import javafx.application.Application;
 import javafx.application.Platform;
@@ -18,19 +18,29 @@ import javafx.stage.Stage;
 
 public class MainApp extends Application {
 
+    private static final double SELECTOR_WIDTH = 740;
+    private static final double SELECTOR_HEIGHT = 450;
+    private static final double WORKBENCH_MIN_WIDTH = 1080;
+    private static final double WORKBENCH_MIN_HEIGHT = 720;
+
     private MainController controller;
     private Stage primaryStage;
     private Scene mainScene;
     private javafx.scene.layout.StackPane targetSelectionPlaceholder;
+    private double workbenchWidth = 1440;
+    private double workbenchHeight = 900;
+    private boolean showingWorkbench;
 
     @Override
     public void start(Stage stage) {
         AppLog.installUncaughtHandler();
+        AppLog.info("UI runtime="+System.getProperty("java.home")+"; scope model="+
+                com.agentmonitor.model.config.ScopeSelection.class.getProtectionDomain().getCodeSource());
         this.primaryStage = stage;
-        primaryStage.setTitle("Java 性能监控工具");
+        primaryStage.setTitle("Agent Monitor");
         primaryStage.getIcons().add(AppIcons.monitorIcon());
-        primaryStage.setMinWidth(1240);
-        primaryStage.setMinHeight(720);
+        primaryStage.setMinWidth(680);
+        primaryStage.setMinHeight(420);
         primaryStage.setOnCloseRequest(e -> {
             if (controller != null) controller.onWindowClose();
         });
@@ -48,7 +58,7 @@ public class MainApp extends Application {
         targetSelectionPlaceholder = new javafx.scene.layout.StackPane(welcome);
         targetSelectionPlaceholder.getStyleClass().add("root-pane");
 
-        mainScene = new Scene(targetSelectionPlaceholder, 1520, 820);
+        mainScene = new Scene(targetSelectionPlaceholder, SELECTOR_WIDTH, SELECTOR_HEIGHT);
         mainScene.getStylesheets().add(
                 getClass().getResource("/com/agentmonitor/app/main.css").toExternalForm());
         primaryStage.setScene(mainScene);
@@ -58,10 +68,20 @@ public class MainApp extends Application {
     }
 
     private void showSelectDialog() {
+        if (showingWorkbench) {
+            workbenchWidth = Math.max(WORKBENCH_MIN_WIDTH, primaryStage.getWidth());
+            workbenchHeight = Math.max(WORKBENCH_MIN_HEIGHT, primaryStage.getHeight());
+            showingWorkbench = false;
+        }
         // Do not leave controls bound to an exited target visible behind the selector.
         mainScene.setRoot(targetSelectionPlaceholder);
+        primaryStage.setMinWidth(680);
+        primaryStage.setMinHeight(420);
+        primaryStage.setWidth(SELECTOR_WIDTH);
+        primaryStage.setHeight(SELECTOR_HEIGHT);
+        primaryStage.centerOnScreen();
         JvmSelectDialog dialog = new JvmSelectDialog(primaryStage);
-        dialog.showAndWait(this::showMain);
+        dialog.showEmbedded(mainScene, this::showMain);
     }
 
     private void showMain(JvmProcess selected) {
@@ -69,6 +89,12 @@ public class MainApp extends Application {
         controller = new MainController(selected);
         controller.setOnSwitchTarget(() -> Platform.runLater(this::showSelectDialog));
         mainScene.setRoot(controller.getRoot());
+        showingWorkbench = true;
+        primaryStage.setMinWidth(WORKBENCH_MIN_WIDTH);
+        primaryStage.setMinHeight(WORKBENCH_MIN_HEIGHT);
+        primaryStage.setWidth(workbenchWidth);
+        primaryStage.setHeight(workbenchHeight);
+        primaryStage.centerOnScreen();
     }
 
     public static void main(String[] args) {

@@ -1,8 +1,10 @@
 # Agent Monitor
 
-一个面向本机 Java 进程的桌面性能监控工具。它通过 Java Attach API 注入 Agent，对指定业务包的方法、Servlet/HTTP 边界和 JDBC 调用做运行时观测；停止时会请求还原字节码，并生成适合人工和 AI 分析的会话报告。
+一个面向本机 Java 进程的性能监控工具，提供桌面 App 和无界面 CLI。它通过 Java Attach API 注入 Agent，对指定业务包的方法、Servlet/HTTP 边界和 JDBC 调用做运行时观测；停止时会请求还原字节码，并生成适合人工和 AI 分析的会话报告。
 
 > 适合本地开发、联调和问题复现。请先在测试环境验证配置，再用于重要服务。
+
+文档入口：[完整导航](docs/README.md) · [AI 协作指引](AGENTS.md) · [AI 分析工作流](docs/ai-workflow.md) · [文件维护与清理](docs/workspace-maintenance.md)
 
 ## 5 分钟上手
 
@@ -55,12 +57,61 @@ Windows 请在 Windows 的 Git Bash 中执行：
 
 产物位于项目根目录的 `app/Agent Monitor/Agent Monitor.exe`，使用 `icon.ico` 生成资源管理器和任务栏图标。Windows 安装包必须在 Windows 环境中打包，不能从 macOS 交叉生成。
 
+### CLI：无界面采集与离线分析
+
+配置初始化/校验、范围预览、会话目录和原生 AI 输出验收，详见 [CLI 工作流](docs/cli-workflow.md)。
+
+核心新增自适应开销预算、一次挂载的滚动采集、历史证据索引、诊断时间线与严格基线比较，契约、限制与命令见 [核心采集与证据](docs/core-capture-and-evidence.md)。
+
+独立 Servlet 接口统计、按症状排查、出站依赖采集及跨服务关联，覆盖范围、实际口径与使用方式见 [HTTP 统计与跨服务关联](docs/http-metrics-and-distributed-tracing.md)。
+
+真实容器验收项目见 [Colima / Docker Java 性能实验室](examples/docker-performance-lab/README.md)：三个 Spring Boot 服务与 PostgreSQL、Redis、RabbitMQ，支持一键采集、跨服务/统计/JFR/还原验收和结果留存。
+
+工程内的 [java-performance skill](skills/java-performance/SKILL.md) 包含 CLI 检测/安装、后台分段采集、增量结果读取与 AI 验收流程；`.agents/skills/java-performance` 链接到同一目录，供 Codex 在此工程发现。Skill 不内置 JAR，安装缓存及采集数据位于工程外，可直接复制整个 skill 目录独立使用。长任务的 worker 不依赖对话常驻；AI 自动回访需宿主调度能力。运行 `python3 skills/java-performance/scripts/perf.py --help` 查看入口；验证脚本为 `python3 scripts/verify-performance-skill.py`（仅采集自建子 JVM）。
+
+CLI 使用同一套 core 服务，不加载 JavaFX。先构建分发目录：
+
+```bash
+./gradlew :monitor-cli:installDist
+./monitor-cli/build/install/monitor/bin/monitor --help
+./monitor-cli/build/install/monitor/bin/monitor jvm list --json
+./monitor-cli/build/install/monitor/bin/monitor capture --pid <PID> --config monitor.yml --duration 60s --json
+./monitor-cli/build/install/monitor/bin/monitor analyze --session <会话目录> --json
+```
+
+Windows 使用同目录的 `monitor.bat`。`capture` 必须提供明确的 PID 和合法 YAML 范围；
+时长支持 `ms`、`s`、`m`，范围为 500ms–60m。`--output <目录>` 可覆盖本次会话根目录。
+采集进程在前台保留 Collector；先等待 READY，再开始计时。正常结束或 SIGTERM / Ctrl-C 时请求停止并确认字节码还原。
+强制终止（如 SIGKILL）无法执行清理；同一个 JVM 若留有未确认还原的会话标记，需要重启目标后再采集。
+App 与 CLI 共用按 PID 和进程启动时间区分的本地会话锁，避免重复挂载。
+
+标准输出只包含最终 JSON（`--help` 除外），进度写入标准错误；通过启动脚本直接调用可避免 Gradle 日志混入 JSON。
+退出码：`0` 成功、`2` 参数/配置错误、`3` 执行失败、`4` 可能已挂载但还原未确认、`5` 已还原但采集不完整。
+`analyze` 的 `5` 也表示离线原始数据不完整或缺少质量证据。退出码 `0` 不代表发现了慢调用，应检查 `analysisReady`、采集数和阈值。
+`analyze` 读取原始 Span 重算报告并输出 JSON，保留 Trace ID，不覆盖原报告或其他会话文件，也不会连接目标 JVM。
+
+### 桌面工作台
+
+启动与切换目标时，进程选择直接显示在主窗口。左侧导航在同一窗口切换「采集配置」「调用链」「JVM 概览」「诊断分析」「会话与报告」和「高级配置」。前五页支持 `⌘ / Ctrl + 1–5`；切页保留搜索、选择和未应用的 YAML 草稿。顶部始终显示目标进程、采集状态、运行时长和开始/停止操作，底部显示连接状态与最近反馈。窗口支持缩小至 1080 × 720。
+
+采集配置以包树和类列表为主，刷新、导入、保存集中在页头。「清空范围」后可撤销；继续修改范围、规则或导入配置后，旧撤销记录失效。长包规则以省略号显示，悬停可查看完整内容。点击「编辑排除规则」会切换到完整编辑区域，「返回包与类」恢复浏览；有未应用的规则时禁止相冲突的勾选或启动。JVM 指标集中在概览页，底部保留内存、线程和 GC 快照。
+
+在采集配置、调用链或诊断表格中，`⌘ / Ctrl + F` 聚焦当前页搜索；搜索框的清除按钮或 `Esc` 清除过滤条件，不改变采集范围。进程选择页支持同样的搜索操作。
+
+完整 YAML 在「高级配置」页编辑，明确提示未应用修改与应用结果；没有修改时禁用应用按钮。校验失败时保留草稿并显示原因，应用后同步范围选择；运行中的修改在下次采集生效。未修改的编辑器会在返回时载入最新配置；若保留草稿期间在其他页面改变了配置，应用会提示冲突，需先保留草稿、再用「恢复当前配置」载入最新设置。
+
+调用链页中，双击方法、按 Enter 或点「调用详情」打开同页侧栏；切换调用即可查看线程、Trace/Span 标识、参数、SQL 与异常。概览按请求和执行上下文展示；HTTP 入口不读取请求体，若下层业务方法记录了入参，「参数」页会标明来源并展示该快照。无参方法、未记录快照和开销降级分别给出提示；详情随完整快照更新，对应调用被过滤或清空时收起。「占根调用」是当前耗时相对本地根调用的比例，包含子调用，不是 CPU 占用。
+
+停止并确认还原后，自动进入「会话与报告」，可打开最终报告、会话目录或复制 AI 分析提示词。左下角「历史会话」加载离线调用链，「运行日志」打开日志查看器。诊断分析使用独立的分类导航，所有证据类别都在工作台内打开。
+
 ### 使用流程
+
+范围选择支持“纳入大包、排除小包”：浏览并选中父包后点击“纳入整包”，再选中子包点击“排除此包”。顶部持续显示已纳入包和已排除子包，高级配置同步；“恢复跟随父包”移除当前包自己的规则，保留独立类和更深子包规则。包级规则对之后加载的新类也生效，排除优先。
 
 1. 启动桌面应用，选择目标 JVM。
 2. 等待包/类树索引完成，选择需要监控的业务包，例如 `com.example.order`。
-3. 按需排除 DTO、Entity、配置类及 getter/setter，并检查右侧 YAML 预览。
-4. 确认 YAML 中 `output.exporters` 包含 `netty`，再点击开始；等待状态变为“监控中”。
+3. 按需排除 DTO、Entity、配置类及 getter/setter，并在高级配置页检查 YAML。
+4. 确认 YAML 中 `output.exporters` 包含 `otlp`（默认）或兼容的 `netty`，再点击开始；等待状态变为“监控中”。
 5. 复现请求或业务场景。
 6. 点击停止，等待“字节码已还原”的确认。
 7. 打开本次会话目录中的 `reports/performance-report.json` 分析热点和慢链路，并先检查 `captureQuality` 是否存在丢弃或目标端拒绝。
@@ -73,6 +124,12 @@ Windows 请在 Windows 的 Git Bash 中执行：
 | Collector 未连接或 STOP 超时 | 查看 App 日志和 `agent-logs/agent-monitor.log`；不要假设目标已恢复。 |
 | `RESET_FAILED` / 未确认 | 为避免残留 transformer 影响目标进程，重启目标服务后再监控。 |
 
+## JVM 诊断中心
+
+工作台「诊断分析」页包括：指标时间线、未完成调用、线程与锁、SQL / 连接等待、异常、异步任务、线程池 / 连接池、内存与 GC、类来源及证据质量。支持历史会话、优化前后对比、JFR 录制/导入、对象直方图/堆转储与指定本机 async-profiler。
+
+App / CLI 监控默认将带时间戳的 JVM 指标与连续线程快照写入会话 `diagnostics/`，与 Span 采集质量分别呈现。JFR、异常 throw 事件和条件触发通过 `diagnostics` YAML 开启。CLI 增加 `diag`、`profile`、`compare`；[完整功能、配置、边界与验证](docs/diagnostics.md)。
+
 ## 能力边界
 
 | 能力 | 说明 |
@@ -80,23 +137,34 @@ Windows 请在 Windows 的 Git Bash 中执行：
 | 业务方法观测 | 按包名筛选，记录调用树、耗时、异常和可选参数/返回值。 |
 | HTTP / Servlet | 识别 `javax.servlet` 与 `jakarta.servlet` 的 Servlet 边界。 |
 | JDBC | 观测标准 `Connection` / `Statement` 调用，辅助定位 SQL 相关耗时。 |
-| 实时查看 | App 通过本机 Netty Collector 接收 Span。 |
+| 实时查看 | App 通过本机 OTLP/HTTP Collector 接收 Span。 |
 | Netty 断线恢复 | 已成功启动后与同一 Collector 断开时，Agent 在后台退避重连，并重新发送 `HELLO → READY`。 |
 | 离线留档 | 可同时写入轮转后的 JSON Span 文件和最终分析报告。 |
 | 安全停止 | STOP 指令在字节码还原、Span 导出队列排空并写回最终回执后才确认停止。 |
 
-当前不目标于替代完整 APM：不提供跨进程链路追踪、集中式服务端、长期指标存储或生产级采样治理。
+当前支持指定 HTTP 客户端的上下文传播和多会话跨服务关联，覆盖范围见 [HTTP 统计与跨服务关联](docs/http-metrics-and-distributed-tracing.md)。不提供集中式服务端、长期指标存储或生产级采样治理。
 
 ## 架构与类加载隔离
 
 ```mermaid
 flowchart LR
-  APP["Agent Monitor App\nJavaFX + Attach API"] --> ENTRY["Thin Agent Entry\nSystem Loader"]
-  ENTRY --> BRIDGE["Bootstrap Bridge\nJDK-only ABI"]
-  ENTRY --> CORE["Isolated Agent Core\nchild-first loader"]
-  CORE --> BB["Byte Buddy / Netty\nprivate dependencies"]
-  APP --> REPORTS["Session reports\nJSON + README"]
+  APP["monitor-app / JavaFX"] --> HOST["monitor-core / Attach、Collector、报告"]
+  CLI["monitor-cli / 前台命令"] --> HOST
+  HOST --> MODEL["monitor-model / JDK-only 协议与数据"]
+  AGENT["monitor-agent / 目标 JVM 内"] --> MODEL
+  HOST -. "Attach + loopback 协议" .-> AGENT
+  AGENT --> ENTRY["Thin Entry / System Loader"]
+  ENTRY --> BRIDGE["Bootstrap Bridge / JDK-only ABI"]
+  ENTRY --> PAYLOAD["Agent Core / child-first loader"]
+  PAYLOAD --> LIB["Byte Buddy、Netty / 私有依赖"]
 ```
+
+三个执行入口是 Agent、App、CLI；共享纯 Java 的 model/core。App 只维护界面状态，core 不依赖 JavaFX 或 Agent 实现。
+其中 `TraceServer` 承担本地 Collector 职责：接收、校验并组装 Span，再交给分析服务；Attach、会话控制与报告分析分别独立。
+默认数据面为标准 OTLP/HTTP protobuf，生命周期控制使用独立的本机 TCP 通道。内置 Collector 按 receiver → processor → exporter 组织，可转发至官方 OpenTelemetry Collector。
+Agent JAR 仅作为 App/CLI 分发资源存在；core JAR 不携带该资源，Agent 实现类不会出现在控制端普通 classpath。
+`MonitoringRuntime` 统一会话所有权、Collector 启动、挂载、READY 与停止还原；实时预览以 traceId 更新独立不可变快照，收到 STOP 交付屏障后才冻结最终 `TraceNode`，由桌面端转换成 JavaFX `CallNode`。
+
 
 核心约束：
 
@@ -114,7 +182,9 @@ flowchart LR
 
 | 模块 | 职责 | 主要入口 |
 | --- | --- | --- |
-| `monitor-app` | JavaFX UI、JVM 列表、Attach、Collector、会话与报告 | `com.agentmonitor.app.MainApp` |
+| `monitor-app` | JavaFX UI、交互、纯 Java 数据到 observable 状态的适配 | `com.agentmonitor.app.MainApp` |
+| `monitor-core` | Attach、OTLP Collector、会话、报告和回放 | `MonitoringRuntime` |
+| `monitor-cli` | 前台采集、JVM 列表、只读分析和 JSON 输出 | `MonitorCli` |
 | `monitor-agent` | thin entry、bootstrap bridge、隔离 core、Byte Buddy Advice、Exporter | `AgentBootstrap` / `AgentMain` |
 | `monitor-model` | App 与 Agent 共用的协议、Span、配置值对象 | `com.agentmonitor.model.*` |
 
@@ -125,6 +195,49 @@ flowchart LR
 | `monitor-agent.jar` | System Loader | 仅 `AgentBootstrap` 与两个嵌套 JAR。 |
 | `agent/monitor-bootstrap-bridge.jar` | Bootstrap Loader | JDK-only Bridge 和生命周期 ticket。 |
 | `agent/monitor-agent-core.jar` | 私有 child-first loader | Agent core、Byte Buddy、Netty 和 Exporter。 |
+
+## OpenTelemetry Collector 接入
+
+支持的标准数据面是 **Traces / OTLP over HTTP / binary protobuf**，接收 gzip；Trace ID 为 16 字节、Span ID 为 8 字节。未实现 OTLP/gRPC、Metrics、Logs，异步任务使用来源 Trace/Span 的标准 link 关联独立根链路；支持 Servlet 入站及 JDK HttpClient / Apache classic 出站的 W3C 上下文传播，不覆盖完整 OTel SDK 的全部跨线程和跨服务场景。架构对应 [OpenTelemetry Collector 的 receiver、processor、exporter 管线](https://opentelemetry.io/docs/collector/architecture/)，内置实现仍由本项目维护。
+
+```mermaid
+flowchart LR
+  AGENT[目标 JVM Agent] -->|OTLP/HTTP traces| RECEIVE[内置 OTLP receiver]
+  RECEIVE --> VALIDATE[session 校验、预算、去重、链路组装]
+  VALIDATE --> REPORT[App / CLI 报告]
+  VALIDATE -->|可选 OTLP/HTTP| COLLECTOR[官方 OTel Collector]
+  COLLECTOR --> BACKEND[观测后端]
+```
+
+本机 receiver 地址和会话标识自动写入 Agent 配置与 `collector.json`。如需转发，启动官方 Collector，配置参见 [otelcol-local.yaml](docs/otelcol-local.yaml)，再在采集 YAML 加入：
+
+```yaml
+output:
+  exporters: [otlp, file]
+  otlpForwardEndpoint: http://127.0.0.1:4318/v1/traces
+```
+
+内置 receiver 只转发通过会话校验、格式校验和处理器接受的 Span，保留其原始 protobuf 的事件、链接和类型。App 的分析投影保留异常事件、链接及 dropped 计数；属性值转为文本，投影不是原始 OTLP 的无损归档。需要完整标准遥测留档时配置外部 Collector 后端。
+
+每请求最多 4MiB，最多 4 个连接、2 个处理线程和 2 个排队任务；组装预算为 4096 条链路 / 32MiB，达到上限时明确拒绝并降低采集质量。单 Span 的身份字段和证据也有限额。收到根 Span 后可以预览，迟到子 Span 持续合并，到 STOP 屏障后才形成最终报告。运行中的慢链路快照带 `provisional: true`。
+
+Agent 的网络请求有总截止时间和有界响应；明确的 429/502/503/504，以及结果未知的传输 I/O/超时，最多额外重试一次。不重试部分成功、非法 protobuf 或中断；日志记录根异常类型。重试可能重复交付相同 payload，本地 Collector 按 Trace/Span 身份幂等去重，不能保证外部后端恰好一次。单批两次请求总上界约 4.25 秒；STOP 导出 drain 预算 5 秒，Collector 停止回执等待 12 秒，失败仍明确标记不完整。部分拒绝按整个受影响批次保守记入失败目的地，计数不等于对端精确拒绝的 Span 数。Collector 的接收成功只代表该接收端确认，不证明最终后端持久化；具体范围记录在 `collector.json`。
+
+官方二进制互通回归（需要本机 `otelcol`）：
+
+```bash
+./gradlew :monitor-core:collectorInterop -PotelcolBinary=/absolute/path/to/otelcol
+```
+
+该测试使用真实子 JVM，经过内置 receiver → 官方 Collector 的 receiver/batch/otlphttp → 测试接收端，校验采集、报告与停止还原。
+
+## 范围选择器
+
+包目录用于浏览，右侧搜索覆盖全部已发现的类。搜索、切换目录、刷新索引都不修改规则。可以直接纳入单个类，也可以勾选包并包含子包；每页最多 150 类，“纳入本页”只作用于当前页。取消上层包下的子包会生成包排除规则，后续加载的类也保持排除。
+
+纳入包使用字面包前缀，独立类使用精确 JVM 类名；排除支持 `pkg:` 和 `cls:` 通配条件，并始终优先。命中通配排除的类不会出现虚假的选中状态。编辑排除规则后要应用或还原草稿，再修改勾选或开始采集。空范围保留为空并禁止启动，不再补回示例包；所有生效改动统一同步高级配置。
+
+统计按归属分开显示：顶部是“全局待采集”，包名旁是“本包范围（含子包）/纳入采集”，底部是“当前列表/搜索结果”，目录下是目标 JVM 索引总量。切包时不会把上一包的统计挂到新包名下。运行中的实际增强结果独立于下一轮规则预览。CPU/内存增量不再按类数估算，参见[性能与 AI 验收记录](docs/performance-and-ai-validation.md)。
 
 ## 配置
 
@@ -159,7 +272,7 @@ sampling:
   tailOverflowPolicy: promote
 
 output:
-  exporters: [netty, file]
+  exporters: [otlp, file]
   capture:
     # 默认开启有界快照；内容截断会带结构化标记，也可单独关闭。
     arguments: true
@@ -178,7 +291,7 @@ dependencies:
 - `sampling.ratePercent` 以一条根调用为单位决定是否立即记录，业务、HTTP、JDBC 子调用继承同一决定，因此调用树不会残缺。定位单条复杂链路时使用 `ratePercent: 100`，可完全绕开尾采样缓冲。
 - 未立即采中的调用会在根调用结束时判断：达到 `tailCaptureThresholdMs` 或任一 Span 抛异常，就完整导出整条链路。它们受 `tailMaxBufferedSpans` 与 `tailMaxBufferedSizeMb` 限制；达到上限时由 `tailOverflowPolicy` 决定转实时导出（默认 `promote`）还是明确丢弃（`drop`）。
 - 默认对入参、返回值与 SQL 绑定参数做有界快照；需要减少输出时，可单独关闭 `arguments`、`returnValue` 或 `sqlParameters`。
-- 本地排查保留 `netty + file`；file exporter 便于离线复盘。
+- 本地排查保留 `otlp + file`；file exporter 便于离线复盘。
 - Netty 重连只恢复到同一个 Collector 地址和端口。断线窗口采用至多一次投递：Span 不会缓存重放，可能缺少该窗口的数据，但不会因重试产生重复 Span。
 - JDBC 和 HTTP 默认开启，也可按配置单独关闭。
 
@@ -191,6 +304,8 @@ dependencies:
 ├── README.md
 ├── config.yml
 ├── session.json
+├── resource.json
+├── collector.json        # OTLP 地址、session、限额和确认范围
 ├── ai-analysis-prompt.txt
 ├── spans/
 │   ├── README.md
@@ -199,7 +314,8 @@ dependencies:
 ├── reports/
 │   ├── README.md
 │   ├── slow-spans.json
-│   └── performance-report.json
+│   ├── performance-report.json
+│   └── ai-analysis-output.schema.json
 └── agent-logs/
     ├── README.md
     └── agent-monitor.log
@@ -276,7 +392,7 @@ AI 还应检查 `captureComplete`、`interruptedRootCalls` 和 `pendingInvocatio
 | SQL / HTTP 证据 | 原始 Span 的种类、耗时和属性：SQL 指纹/摘要、批次、Servlet 请求方法/路径/状态码等。入参、返回值、SQL 参数受 capture 配置和截断限制。 |
 | 异常证据 | 原始 Span 的错误状态、异常类型、异常堆栈及事件；报告保留观测错误数和链路错误标记。 |
 | 数据质量 | 报告的 `status`、`analysisReady`、`captureQuality`、`analysisLimits`，以及原始文件清单的 `captureComplete`。 |
-| JVM 实时指标 | 界面提供堆/非堆内存、线程、类加载、GC 次数和累计耗时；当前未持久化到会话报告，不能据此让离线 AI 判断某次慢调用是否由 GC 导致。 |
+| JVM 时序指标 | 默认持久化 CPU、内存、线程、类加载、GC 与池证据，报告附独立 diagnosticSummary；GC 暂停归因还需 JFR 事件、时间对齐和对照验证。 |
 
 默认分析阈值为根链路 3000ms、慢 Span 800ms、慢 self time 300ms；默认也保留异常链路。
 分析阈值决定哪些已采到的链路进入慢链路报告，`sampling` 决定哪些链路被采集；调低分析阈值不会补回未采到的数据。
@@ -295,19 +411,20 @@ AI 还应检查 `captureComplete`、`interruptedRootCalls` 和 `pendingInvocatio
 5. `agent-logs/agent-monitor.log`：确认哪些类实际被增强，以及是否有 retransformation 失败。
 6. 仅在需要证据时读取 `spans/spans-*.json`，它们可能很大且包含敏感参数。
 
-可直接复制这段提示词：
+使用会话内的 `ai-analysis-prompt.txt` 或界面“复制 AI 分析提示词”；二者统一由 core 的 `SessionAnalysisPrompt` 生成（当前 v4），避免手写简化版与导出内容不同步。新会话同时生成 `reports/ai-analysis-output.schema.json`。
 
-```text
-你是 Java 性能分析助手。先阅读会话根目录 README 和 reports/README，
-再分析 reports/performance-report.json。请输出：
-1. 最值得优先处理的 3 个热点或慢链路；
-2. 每项的证据（方法、耗时、同步调用路径、self time）；
-3. 可能根因及需要进一步验证的假设；
-4. 风险最低的优化建议。
-不要把缺失的报告解释为“没有性能问题”；请检查会话状态、`captureQuality` 与 agent 日志。
-检查 spans/manifest.json 的 captureComplete 和 Span 的采样、截断属性；缺失或截断的数据不能作为完整证据。
-部分普通请求加慢请求兜底是有偏采样，不要直接用它计算总体平均耗时、P95 或错误率。
+模板要求先检查采集质量，再给有具体证据的发现、根因假设、缺少的信息和对照验证步骤，最后输出固定 JSON。不会要求 AI 凑满热点、臆测 GC/锁原因或给出未经验证的优化收益。对于只包含入口的窄范围采集，self time 不能直接解释为该方法自身 CPU 计算。
+
+优先使用原生 CLI 只读验收器核对 AI 的严格 JSON 响应；完整流程见 [AI 分析工作流](docs/ai-workflow.md)：
+
+```bash
+./monitor-cli/build/install/monitor/bin/monitor ai verify --session <会话目录> --response <AI输出.json> --json
+# Python 3.9+ 兼容入口
+python3 scripts/verify-ai-analysis.py --session <会话目录> --response <AI输出.json>
+python3 -m unittest discover -s scripts/tests -v
 ```
+
+它校验本项目输出契约、采集质量、会话身份、真实文件/JSON Pointer、数值、单位和对应方法/Trace ID。通过不代表根因正确或收益已证实，仍需源码与同负载复测。旧会话的提示词文件不会自动改写；本次提供了[真实数据示例与测量边界](docs/performance-and-ai-validation.md)。
 
 ## 开发导航
 
@@ -316,31 +433,31 @@ AI 还应检查 `captureComplete`、`interruptedRootCalls` 和 `pendingInvocatio
 | 注入、重挂、停止、类加载隔离 | `monitor-agent/src/bootstrap/`、`AgentMain.java` |
 | 增强哪些类/方法 | `AgentMain.java`、`interceptor/` |
 | Span 导出与 STOP 协议 | `exporter/`、`monitor-model/.../protocol/` |
-| Attach 与 Agent 文件提取 | `monitor-app/.../service/JvmService.java` |
-| 收集、停止确认与 UI 状态 | `monitor-app/.../service/TraceServer.java`、`MainController.java` |
-| 会话报告与 AI 文档 | `monitor-app/.../report/` |
+| Attach 与 Agent 文件提取 | `monitor-core/.../service/JvmService.java` |
+| 收集、停止确认与 UI 状态 | `monitor-core/.../service/MonitoringRuntime.java`、`TraceServer.java`；界面状态在 `MainController.java` |
+| 会话报告与 AI 文档 | `monitor-core/.../report/` |
 
 ### 对真实 JVM 做独立采集验证
 
 使用与桌面 App 相同的服务验证挂载、报告生成与历史回放，并保留完整结果：
 
 ```bash
-./gradlew :monitor-app:desktopSmoke --args='<PID> com.example.ExactClass 45'
+./gradlew :monitor-cli:desktopSmoke --args='<PID> com.example.ExactClass 45'
 ```
 
 在限定时间内触发目标方法；可在输出的会话目录创建 `stop.request` 提前停止。
-结果保存在 `monitor-app/build/desktop-smoke/`，检查 `desktop-smoke-result.json` 的 `verified`，
+结果保存在 `monitor-cli/build/desktop-smoke/`，检查 `desktop-smoke-result.json` 的 `verified`，
 再读取最终报告和原始 Span。此入口关闭入参、返回值和依赖采集，不替代界面逐项交互检查。
 
 除桌面 App 的完整会话流程外，也可独立验证 Agent 的 Attach、采集、STOP 回执和原始文件：
 
 ```bash
-./gradlew :monitor-app:attachSmoke --args='<PID> com.example.ExactClass 30'
+./gradlew :monitor-cli:attachSmoke --args='<PID> com.example.ExactClass 30'
 ```
 
 必须显式提供本机目标 PID 和一个完整类名；持续时间为 1–120 秒。该入口使用真实 Attach API 和
 本机协议接收器，不使用 UI 示例数据。它关闭参数、返回值、SQL 参数及 HTTP/JDBC 采集，
-自动请求停止并核对还原回执；结果位于 `monitor-app/build/live-smoke/<时间>-pid-<PID>/`。
+自动请求停止并核对还原回执；结果位于 `monitor-cli/build/live-smoke/<时间>-pid-<PID>/`。
 
 先检查 `smoke-result.json` 的 `restored`、`analysisReady` 和 `captureQuality`；再读取 `spans/manifest.json`
 和原始 Span。`analysisReady` 还要求文件与网络的 Span 数量一致、父 Span 均存在。
@@ -381,8 +498,8 @@ Agent 使用支持新 JDK 的 Byte Buddy；可以显式指定子 JVM，验证与
 ## 验证命令
 
 ```bash
-# 全部单元测试、Agent 真实子 JVM 隔离测试、App 构建
-./gradlew test :monitor-app:shadowJar
+# 模块边界、全部测试、真实子 JVM 采集/中断还原、App 与 CLI 构建
+./gradlew check :monitor-app:shadowJar :monitor-cli:installDist :monitor-cli:shadowJar
 
 # 仅验证 Agent 的真实类加载隔离与重复加载
 ./gradlew :monitor-agent:test --tests com.agentmonitor.agent.integration.AgentClassLoadingIntegrationTest
@@ -400,3 +517,6 @@ Agent 使用支持新 JDK 的 Byte Buddy；可以显式指定子 JVM，验证与
 4. STOP 成功的含义是已确认还原字节码；失败时保留旧 runtime 供重试，不能提前关闭其 class loader。
 5. 对 Agent/bridge ABI 的不兼容变更必须提高 `BootstrapBridge.apiVersion()`，使已运行 JVM 快速失败而非链接到错误版本。
 6. 新增会话文件时，优先原子写入，并在文件旁提供简短 README，避免 AI 读取半成品或误解文件含义。
+7. model 只使用 JDK；core/CLI 不得引入 JavaFX，Agent 不得依赖 core/App/CLI。
+8. UI 的 observable 属性只存在于 App；core 通过冻结后的纯 Java 调用树发布结果。
+9. App/CLI 必须通过 MonitoringRuntime 管理会话，停止结果和导出质量是不同结论；未确认还原时不能自动重试挂载。

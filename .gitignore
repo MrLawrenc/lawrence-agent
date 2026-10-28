@@ -19,3 +19,7 @@ agent-monitor.zip
 # Keep the Gradle Wrapper JAR versioned; all other packaged artifacts are generated.
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
+
+# Python verification helpers
+__pycache__/
+*.py[cod]

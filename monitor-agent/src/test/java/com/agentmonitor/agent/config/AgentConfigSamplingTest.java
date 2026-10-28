@@ -14,6 +14,16 @@ import com.agentmonitor.model.config.MonitoringConfig.TailOverflowPolicy;
 class AgentConfigSamplingTest {
 
     @Test
+    void diagnosticsCanBeDisabledAcrossBothAttachEncodings() throws Exception {
+        org.junit.jupiter.api.Assertions.assertFalse(AgentConfig.parse("pkg=example.,diagnostics.enabled=false").isDiagnosticsEnabled());
+        Path properties=Files.createTempFile("agent-monitor-diagnostics-", ".properties");
+        try { Files.writeString(properties,"pkg=example.\ndiagnostics.enabled=false\n");
+            org.junit.jupiter.api.Assertions.assertFalse(AgentConfig.parse("cfg="+properties).isDiagnosticsEnabled());
+        } finally { Files.deleteIfExists(properties); }
+        assertTrue(AgentConfig.parse("pkg=example.").isDiagnosticsEnabled());
+    }
+
+    @Test
     void directArgumentsOverrideEverySamplingDefault() {
         AgentConfig config = AgentConfig.parse("pkg=example.,inclCls=example.StandaloneService,sampling.rate=37,sampling.slowThreshold=0,"
                 + "sampling.tailMaxBufferedSpans=2048,sampling.tailMaxBufferedSizeMb=8,"

@@ -13,6 +13,26 @@ import com.agentmonitor.model.span.SpanKind;
 
 public class CallNode {
 
+    /** Copies a completed headless tree into desktop-owned observable state. */
+    public static CallNode fromTrace(com.agentmonitor.model.trace.TraceNode source) {
+        java.util.Map<com.agentmonitor.model.trace.TraceNode, CallNode> copies = new java.util.IdentityHashMap<>();
+        java.util.ArrayDeque<com.agentmonitor.model.trace.TraceNode> pending = new java.util.ArrayDeque<>();
+        pending.add(source);
+        while (!pending.isEmpty()) {
+            var next = pending.removeFirst();
+            copies.put(next, new CallNode(next.getFullClassName(), next.getMethodName2(), next.getThread(),
+                    next.getDurationNanos(), next.isError(), next.getDepth(), next.getSignature(), next.getArgs(),
+                    next.getRetVal(), next.getStackTrace(), next.getKind(), next.getAttributes()));
+            copies.get(next).traceId = next.getTraceId();
+            pending.addAll(next.getChildren());
+        }
+        for (var entry : copies.entrySet())
+            for (var child : entry.getKey().getChildren()) entry.getValue().children.add(copies.get(child));
+        return copies.get(source);
+    }
+
+    private String traceId = "";
+    public String getTraceId() { return traceId; }
     private final StringProperty method;
     private final StringProperty thread;
     private final LongProperty durationNanos;

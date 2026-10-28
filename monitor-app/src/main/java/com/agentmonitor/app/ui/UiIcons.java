@@ -11,6 +11,9 @@ public final class UiIcons {
     public static StackPane icon(String name) {
         SVGPath path = new SVGPath();
         path.setContent(switch (name) {
+            case "close" -> "M4 4 L12 12 M12 4 L4 12";
+            case "scope" -> "M2 2 H6 V6 H2 Z M10 2 H14 V6 H10 Z M2 10 H6 V14 H2 Z M10 10 H14 V14 H10 Z";
+            case "trace" -> "M2 2 H7 V6 H2 Z M7 4 H11 V10 M8 10 H14 V14 H8 Z M4 6 V12 H8";
             case "refresh" -> "M13 5 A5 5 0 1 0 13 11 M13 1 V5 H9";
             case "play" -> "M5 2 L13 8 L5 14 Z";
             case "stop" -> "M3 3 H13 V13 H3 Z";

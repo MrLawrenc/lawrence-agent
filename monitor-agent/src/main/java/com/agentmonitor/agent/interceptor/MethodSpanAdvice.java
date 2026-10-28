@@ -1,11 +1,11 @@
 package com.agentmonitor.agent.interceptor;
+import java.util.concurrent.atomic.AtomicLong;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 
 import com.agentmonitor.agent.exporter.SpanExporter;
 import com.agentmonitor.agent.model.SpanData;
@@ -21,8 +21,6 @@ import net.bytebuddy.implementation.bytecode.assign.Assigner;
 
 public final class MethodSpanAdvice {
 
-    private static final String TRACE_ID_PREFIX = "trace-";
-    private static final char ID_SEPARATOR = '-';
     private static final int MAX_STACK_TRACE_CHARACTERS = 8_000;
     private static final int MAX_VALUE_CHARACTERS = 200;
     private static final int SAMPLING_BUCKETS = 100;
@@ -33,6 +31,7 @@ public final class MethodSpanAdvice {
     public static volatile String[]   CLS_FILTERS        = new String[0];
     public static volatile String[]   EXCL_PKG_FILTERS   = new String[0];
     public static volatile String[]   EXCL_CLS_FILTERS   = new String[0];
+    public static volatile String[] EXCL_PACKAGE_GLOBS = new String[0];
     public static volatile String[]   EXCL_REGEX_FILTERS = new String[0];
     public static volatile boolean    CAPTURE_ARGUMENTS  = true;
     public static volatile boolean    CAPTURE_RETURN_VALUE = true;
@@ -47,8 +46,6 @@ public final class MethodSpanAdvice {
             MonitoringConfig.DEFAULT_TAIL_MAX_BUFFERED_SIZE_MB);
     public static volatile TailOverflowPolicy TAIL_OVERFLOW_POLICY = MonitoringConfig.DEFAULT_TAIL_OVERFLOW_POLICY;
 
-    private static final String PROCESS_ID = Long.toUnsignedString(System.nanoTime(), 36);
-    private static final AtomicLong NEXT_SPAN_ID = new AtomicLong();
     private static final AtomicLong NEXT_ROOT_SAMPLING_DECISION = new AtomicLong();
 
     public static final ThreadLocal<ArrayDeque<SpanContext>> SPAN_STACK =
@@ -62,18 +59,22 @@ public final class MethodSpanAdvice {
         long observerStarted = System.nanoTime();
         ArrayDeque<SpanContext> stack = SPAN_STACK.get();
         SpanContext parent = stack.peek();
+        if (parent == null) parent = AsyncSpanSupport.current();
         InFlightSpans.Ticket invocation = InFlightSpans.enter(parent == null);
         if (invocation == null) return null;
         try {
             TraceSamplingState sampling = parent == null ? newTraceSamplingState() : parent.traceSampling;
-            ValueCapture.Result captured = CAPTURE_ARGUMENTS ? ValueCapture.arguments(allArgs)
+            ValueCapture.Result captured = CAPTURE_ARGUMENTS && OverheadController.detailEnabled() ? ValueCapture.arguments(allArgs)
                     : new ValueCapture.Result("", false);
             String spanId = nextId();
-            SpanContext context = new SpanContext(parent == null ? TRACE_ID_PREFIX + spanId : parent.traceId,
+            Map<String,String> captureAttributes=new LinkedHashMap<>();captureAttributes.put("agent.overhead.entry_mode",OverheadController.mode());
+            if(captured.truncated())captureAttributes.put(SpanAttribute.CAPTURE_TRUNCATED,"arguments");
+            if(CAPTURE_ARGUMENTS&&!OverheadController.detailEnabled())captureAttributes.merge(SpanAttribute.CAPTURE_TRUNCATED,"arguments_adaptive",(a,b)->a+","+b);
+            SpanContext context = new SpanContext(parent == null ? nextTraceId() : parent.traceId,
                     spanId, parent == null ? "" : parent.spanId, className, methodName,
-                    Thread.currentThread().getName(), stack.size(), System.nanoTime(), System.currentTimeMillis(),
+                    Thread.currentThread().getName(), parent == null ? 0 : parent.depth + 1, System.nanoTime(), System.currentTimeMillis(),
                     captured.text(), com.agentmonitor.model.span.SpanKind.BUSINESS,
-                    captured.truncated() ? Map.of(SpanAttribute.CAPTURE_TRUNCATED, "arguments") : Map.of(),
+                    captureAttributes,
                     sampling, invocation);
             stack.push(context);
             recordEntryOverhead(context, observerStarted);
@@ -96,9 +97,10 @@ public final class MethodSpanAdvice {
         long duration = durationNanos(context, observerStarted);
         removeContext(context);
         try {
-            ValueCapture.Result returned = thrown != null || !CAPTURE_RETURN_VALUE
+            ValueCapture.Result returned = thrown != null || !CAPTURE_RETURN_VALUE || !OverheadController.detailEnabled()
                     ? new ValueCapture.Result("", false) : ValueCapture.capture(returnValue);
             Map<String, String> attributes = new LinkedHashMap<>(context.attributes);
+            if(thrown==null&&CAPTURE_RETURN_VALUE&&!OverheadController.detailEnabled())attributes.merge(SpanAttribute.CAPTURE_TRUNCATED,"returnValue_adaptive",(a,b)->a+","+b);
             if (returned.truncated()) attributes.merge(SpanAttribute.CAPTURE_TRUNCATED, "returnValue", (a, b) -> a + "," + b);
             complete(context, completedSpan(context, descriptor, duration, thrown, returned.text(), attributes));
         } finally {
@@ -110,11 +112,13 @@ public final class MethodSpanAdvice {
     public static void recordEntryOverhead(SpanContext context, long started) {
         context.entryOverheadNanos = Math.max(0, System.nanoTime() - started);
         context.traceSampling.addObserverNanos(context.entryOverheadNanos);
+        OverheadController.recordAdvice(context.entryOverheadNanos);
         context.observerNanosAtStart = context.traceSampling.observerNanos();
     }
 
     public static void recordExitOverhead(SpanContext context, long started) {
-        context.traceSampling.addObserverNanos(Math.max(0, System.nanoTime() - started));
+        long elapsed=Math.max(0,System.nanoTime()-started);
+        context.traceSampling.addObserverNanos(elapsed);OverheadController.recordAdvice(elapsed);
     }
 
     public static long durationNanos(SpanContext context, long ended) {
@@ -123,10 +127,14 @@ public final class MethodSpanAdvice {
     }
 
     public static String nextId() {
-        return PROCESS_ID + ID_SEPARATOR + Long.toUnsignedString(NEXT_SPAN_ID.incrementAndGet(), 36);
+        long value;
+        do { value = java.util.concurrent.ThreadLocalRandom.current().nextLong(); } while (value == 0);
+        return java.util.HexFormat.of().toHexDigits(value);
     }
+    public static String nextTraceId() { return nextId() + nextId(); }
 
     public static void removeContext(SpanContext context) {
+        AgentDiagnostics.exit(context);
         Deque<SpanContext> stack = SPAN_STACK.get();
         if (!stack.isEmpty() && stack.peek() == context) stack.pop();
         else stack.removeFirstOccurrence(context);
@@ -148,9 +156,15 @@ public final class MethodSpanAdvice {
                                          Throwable error, String returnValue,
                                          Map<String, String> spanAttributes) {
         Map<String, String> attributes = new LinkedHashMap<>(spanAttributes == null ? Map.of() : spanAttributes);
+        attributes.put("agent.span.elapsed_nanos", Long.toString(duration
+                + Math.max(0, context.traceSampling.observerNanos() - context.observerNanosAtStart)));
         attributes.put(SpanAttribute.OBSERVER_EXCLUDED_NANOS, Long.toString(context.entryOverheadNanos
                 + Math.max(0, context.traceSampling.observerNanos() - context.observerNanosAtStart)));
         attributes.put(SpanAttribute.SAMPLING_RATE, Integer.toString(context.traceSampling.headRatePercent()));
+        attributes.put("agent.overhead.mode",OverheadController.mode());
+        attributes.put("thread.id",Long.toString(context.threadId));
+        attributes.put("agent.local.root_span_id",context.traceSampling.localRootId());
+        if(!context.traceSampling.traceState().isBlank())attributes.put("w3c.tracestate",context.traceSampling.traceState());
         String stackTrace = "";
         String statusDescription = "";
         List<SpanEventData> events = List.of();
@@ -186,11 +200,13 @@ public final class MethodSpanAdvice {
         if (context == null || span == null) return;
         try {
             SpanExporter exporter = EXPORTER;
-            boolean rootSpan = context.parentSpanId == null || context.parentSpanId.isBlank();
+            boolean rootSpan = context.depth == 0;
             if (exporter == null) {
                 if (rootSpan) context.traceSampling.discard();
                 return;
             }
+            long completedCount=context.traceSampling.nextCompletedSpan();
+            if(rootSpan){var attrs=new LinkedHashMap<>(span.attributes());attrs.put("agent.trace.completed_spans",Long.toString(completedCount));span=new SpanData(span.traceId(),span.spanId(),span.parentSpanId(),span.className(),span.methodName(),span.signature(),span.threadName(),span.depth(),span.startedAtEpochMillis(),span.durationNanos(),span.status(),span.arguments(),span.returnValue(),span.stackTrace(),span.kind(),attrs,span.statusDescription(),span.events());}
             span = SpanPayloadLimits.limit(span);
             if (context.traceSampling.isHeadSampled()) {
                 exporter.export(context.traceSampling.annotate(span, "head"));
@@ -238,12 +254,12 @@ public final class MethodSpanAdvice {
     }
 
     static TraceSamplingState newTraceSamplingState() {
-        return new TraceSamplingState(headSampled(), nanosFromMillis(SLOW_TRACE_THRESHOLD_MILLIS),
-                TAIL_MAX_BUFFERED_SPANS, TAIL_MAX_BUFFERED_BYTES, TAIL_OVERFLOW_POLICY, SAMPLING_RATE_PERCENT);
+        int effectiveRate=OverheadController.samplingRate(SAMPLING_RATE_PERCENT);
+        return new TraceSamplingState(headSampled(effectiveRate), nanosFromMillis(SLOW_TRACE_THRESHOLD_MILLIS),
+                TAIL_MAX_BUFFERED_SPANS, TAIL_MAX_BUFFERED_BYTES, TAIL_OVERFLOW_POLICY, effectiveRate);
     }
 
-    private static boolean headSampled() {
-        int rate = SAMPLING_RATE_PERCENT;
+    private static boolean headSampled(int rate) {
         if (rate <= 0) return false;
         if (rate >= SAMPLING_BUCKETS) return true;
         // Multiplication by 37 permutes the 100 buckets. This yields exactly `rate` decisions
@@ -310,6 +326,7 @@ public final class MethodSpanAdvice {
         if (!inTarget) return false;
         for (String p : EXCL_PKG_FILTERS)   { if (!p.isEmpty() && className.startsWith(p))  return false; }
         for (String c : EXCL_CLS_FILTERS)   { if (!c.isEmpty() && (className.equals(c) || className.endsWith("." + c))) return false; }
+        for (String p : EXCL_PACKAGE_GLOBS) { if (com.agentmonitor.model.config.PackagePatternMatcher.matchesClassName(p,className)) return false; }
         for (String r : EXCL_REGEX_FILTERS) { if (!r.isEmpty() && className.matches(r))      return false; }
         return true;
     }

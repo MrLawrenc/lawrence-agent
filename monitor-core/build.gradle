@@ -1,0 +1,68 @@
+plugins { id 'java-library' }
+
+dependencies {
+    api project(':monitor-model')
+    implementation 'io.opentelemetry.proto:opentelemetry-proto:1.11.1-alpha'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
+    implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.16.1'
+    implementation 'io.netty:netty-codec:4.1.135.Final'
+    implementation 'io.netty:netty-codec-http:4.1.135.Final'
+    implementation 'io.netty:netty-handler:4.1.135.Final'
+    implementation 'io.netty:netty-transport:4.1.135.Final'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'org.apache.tomcat.embed:tomcat-embed-core:10.1.55'
+    testImplementation 'jakarta.annotation:jakarta.annotation-api:2.1.1'
+    testImplementation 'org.apache.httpcomponents:httpclient:4.5.14'
+    testImplementation 'redis.clients:jedis:5.2.0'
+    testImplementation 'com.rabbitmq:amqp-client:5.23.0'
+}
+tasks.withType(Test).configureEach {
+    useJUnitPlatform { excludeTags 'officialCollector', 'performance' }
+    jvmArgs '--add-modules', 'jdk.attach'
+}
+// Only the test distribution embeds the Agent. The reusable core JAR contains host code only.
+processTestResources {
+    from(project(':monitor-agent').tasks.named('agentJar')) {
+        into 'agent'
+        rename { 'monitor-agent.agent' }
+    }
+}
+tasks.register('verifyPublicApi', JavaCompile) {
+    group = 'verification'
+    dependsOn tasks.named('classes')
+    source = fileTree('src/apiCheck/java') { include '**/*.java' }
+    classpath = sourceSets.main.output + project(':monitor-model').sourceSets.main.output
+    destinationDirectory = layout.buildDirectory.dir('classes/apiCheck')
+}
+tasks.named('check') { dependsOn tasks.named('verifyPublicApi') }
+tasks.register('collectorInterop', Test) {
+    group = 'verification'
+    description = 'Runs an official Collector binary between real Agent telemetry and a receiver.'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'officialCollector'; excludeTags.clear() }
+    doFirst {
+        if (!providers.gradleProperty('otelcolBinary').isPresent()) throw new GradleException('Pass -PotelcolBinary=/absolute/path/to/otelcol')
+        systemProperty 'agent.monitor.otelcol', providers.gradleProperty('otelcolBinary').get()
+    }
+}
+
+tasks.register('scopeBenchmark', Test) {
+    group = 'verification'
+    description = 'Measures scope queries at 141307 classes; results are local synthetic measurements.'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'performance'; excludeTags.clear() }
+    filter { includeTestsMatching 'com.agentmonitor.core.performance.ScopeIndexBenchmarkTest' }
+    outputs.upToDateWhen { false }
+}
+tasks.register('agentBenchmark', Test) {
+    group = 'verification'
+    description = 'Controlled A/B/A real-Agent measurement with 2250 synthetic business classes.'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'performance'; excludeTags.clear() }
+    filter { includeTestsMatching 'com.agentmonitor.core.performance.AgentScaleBenchmarkTest' }
+    maxHeapSize = '1g'
+    outputs.upToDateWhen { false }
+}

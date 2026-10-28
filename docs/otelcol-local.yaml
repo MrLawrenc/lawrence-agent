@@ -1,0 +1,24 @@
+# 官方 otelcol 的本机 traces 管线示例。运行：otelcol --config docs/otelcol-local.yaml
+# debug 输出用于本地验证；实际部署时替换为自己的后端 exporter。
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 128
+    spike_limit_mib: 32
+  batch:
+    timeout: 1s
+    send_batch_size: 256
+exporters:
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

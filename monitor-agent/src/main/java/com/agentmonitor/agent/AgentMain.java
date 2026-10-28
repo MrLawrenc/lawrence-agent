@@ -44,7 +44,8 @@ import net.bytebuddy.utility.JavaModule;
 public class AgentMain {
 
     private static final long INSTALL_STOP_TIMEOUT_MILLIS = 3_000;
-    private static final long STOP_EXPORTER_DRAIN_TIMEOUT_MILLIS = 3_000;
+    // A bounded OTLP retry can occupy one batch for 2 * 2.1s + 50ms.
+    private static final long STOP_EXPORTER_DRAIN_TIMEOUT_MILLIS = 5_000;
     private static final long STOP_INVOCATION_WAIT_MILLIS = 500;
     private static final int RETRANSFORMATION_BATCH_SIZE = 64;
     private static final Set<String> ACCESSOR_METHOD_PATTERNS = Set.of("get*", "is*", "set*");
@@ -92,6 +93,8 @@ public class AgentMain {
 
         AgentConfig config = AgentConfig.parse(agentArgs);
         AgentLog.configure(config.getAgentLogDirectory());
+        budgetLogDirectory=config.getAgentLogDirectory();budgetSessionId=config.getCaptureSessionId();
+        com.agentmonitor.agent.interceptor.AgentDiagnostics.ENABLED=config.isDiagnosticsEnabled();
         EnhancementResultWriter enhancementResultWriter =
                 new EnhancementResultWriter(config.getAgentLogDirectory());
         logInfo("Bootstrap bridge installed; Agent core is isolated from application class loaders");
@@ -125,6 +128,7 @@ public class AgentMain {
         InFlightSpans.startSession();
         MethodSpanAdvice.EXPORTER = exporter;
         MethodSpanAdvice.ACTIVE = false;
+        com.agentmonitor.agent.interceptor.OverheadController.configure(config.getOverhead());
         MethodSpanAdvice.CAPTURE_ARGUMENTS = config.isCaptureArguments();
         MethodSpanAdvice.CAPTURE_RETURN_VALUE = config.isCaptureReturnValue();
         MethodSpanAdvice.configureTraceSampling(config.getSamplingRatePercent(),
@@ -135,6 +139,7 @@ public class AgentMain {
         JdbcSpanSupport.ENABLED = config.isJdbcEnabled();
         JdbcSpanSupport.CAPTURE_PARAMETERS = config.isCaptureSqlParameters();
         DependencySpanSupport.HTTP_ENABLED = config.isHttpEnabled();
+        com.agentmonitor.agent.interceptor.RequestMetrics.start(config.getAgentLogDirectory(),config.getCaptureSessionId(),config.isHttpEnabled());
         logInfo("trace capture policy: head sampling=" + config.getSamplingRatePercent()
                 + "%, tail promotion=root >= " + config.getSlowThresholdMillis()
                 + "ms or any error; tail buffer=" + config.getTailMaxBufferedSpans()
@@ -145,12 +150,13 @@ public class AgentMain {
         List<String> exclPkg   = new ArrayList<>();
         List<String> exclCls   = new ArrayList<>();
         List<String> exclRegex = new ArrayList<>();
+        List<String> exclPackageGlobs = new ArrayList<>();
         for (String cond : config.getExcludeConditions()) {
             String c = cond.trim();
             if (c.startsWith("pkg:")) {
                 String v = c.substring(4).trim();
                 if (!v.isEmpty()) {
-                    if (PackagePatternMatcher.hasWildcard(v)) exclRegex.add(PackagePatternMatcher.toRegex(v));
+                    if (PackagePatternMatcher.hasWildcard(v)) exclPackageGlobs.add(v);
                     else exclPkg.add(v.endsWith(".") ? v : v + ".");
                 }
             } else if (c.startsWith("cls:")) {
@@ -161,6 +167,7 @@ public class AgentMain {
                 }
             }
         }
+        MethodSpanAdvice.EXCL_PACKAGE_GLOBS = exclPackageGlobs.toArray(new String[0]);
         MethodSpanAdvice.EXCL_PKG_FILTERS   = exclPkg.toArray(new String[0]);
         MethodSpanAdvice.EXCL_CLS_FILTERS   = exclCls.toArray(new String[0]);
         MethodSpanAdvice.EXCL_REGEX_FILTERS = exclRegex.toArray(new String[0]);
@@ -184,10 +191,8 @@ public class AgentMain {
                 if (!v.isEmpty()) {
                     if (PackagePatternMatcher.hasWildcard(v)) {
                         typeMatcher = typeMatcher.and(ElementMatchers.not(
-                                // The class's full name includes its package, so this glob also
-                                // excludes every class below a matched package.  The UI evaluates
-                                // the same expression against packageName only.
-                                ElementMatchers.nameMatches(PackagePatternMatcher.toRegex(v))));
+                                (net.bytebuddy.matcher.ElementMatcher<net.bytebuddy.description.NamedElement>) element ->
+                                        PackagePatternMatcher.matchesClassName(v, element.getActualName())));
                     } else {
                         String pref = v.endsWith(".") ? v : v + ".";
                         typeMatcher = typeMatcher.and(ElementMatchers.not(
@@ -213,11 +218,18 @@ public class AgentMain {
         final net.bytebuddy.matcher.ElementMatcher.Junction<TypeDescription> servletMatcher =
                 ElementMatchers.hasSuperType(ElementMatchers.named("jakarta.servlet.Servlet"))
                         .or(ElementMatchers.hasSuperType(ElementMatchers.named("javax.servlet.Servlet")));
+        final ElementMatcher.Junction<TypeDescription> httpClientMatcher=ElementMatchers.named("jdk.internal.net.http.HttpClientFacade")
+                .or(ElementMatchers.hasSuperType(ElementMatchers.named("org.apache.http.impl.client.CloseableHttpClient")))
+                .or(ElementMatchers.hasSuperType(ElementMatchers.named("org.apache.hc.client5.http.impl.classic.CloseableHttpClient")));
+        final ElementMatcher.Junction<TypeDescription> otherClientMatcher=ElementMatchers.named("redis.clients.jedis.Connection")
+                .or(ElementMatchers.hasSuperType(ElementMatchers.named("com.rabbitmq.client.Channel")));
         // Keep Servlet classes out of business-method Advice completely.  Besides ensuring a
         // single HTTP root, this prevents framework type checks from being inlined into every
         // selected business method and therefore cannot affect application return values.
         final ElementMatcher<TypeDescription> businessTypeMatcher = typeDescription ->
-                finalMatcher.matches(typeDescription) && !servletMatcher.matches(typeDescription);
+                finalMatcher.matches(typeDescription) && !servletMatcher.matches(typeDescription)
+                        && !httpClientMatcher.matches(typeDescription) && !otherClientMatcher.matches(typeDescription)
+                        && (!config.isDiagnosticsEnabled() || !ElementMatchers.hasSuperType(ElementMatchers.named("javax.sql.DataSource")).matches(typeDescription));
         // JDBC is matched by the standard interfaces rather than by a framework or a finite
         // list of driver class names.  This covers pool proxies and all compliant drivers while
         // keeping the collection boundary at Connection/Statement only.
@@ -296,10 +308,19 @@ public class AgentMain {
                         })
                         .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
                         .ignore(ElementMatchers.nameStartsWith("com.agentmonitor.")
+                                .or(ElementMatchers.nameStartsWith("io.opentelemetry."))
+                                .or(ElementMatchers.nameStartsWith("com.google.protobuf."))
+                                .or(ElementMatchers.nameStartsWith("io.netty."))
+                                .or(ElementMatchers.nameStartsWith("net.bytebuddy."))
                                 .or(ElementMatchers.nameStartsWith("java."))
                                 .or(ElementMatchers.nameStartsWith("sun."))
                                 .or(ElementMatchers.nameStartsWith("jdk."))
-                                .or(ElementMatchers.nameStartsWith("com.sun.")))
+                                .or(ElementMatchers.nameStartsWith("com.sun."))
+                                .and(ElementMatchers.not(ElementMatchers.named("java.util.concurrent.ThreadPoolExecutor")
+                                        .or(ElementMatchers.named("java.util.concurrent.ForkJoinPool"))
+                                        .or(ElementMatchers.named("java.util.concurrent.ForkJoinTask"))
+                                        .or(ElementMatchers.named("java.util.concurrent.ScheduledThreadPoolExecutor"))
+                                        .or(ElementMatchers.named("jdk.internal.net.http.HttpClientFacade")))))
                         .with(transformationDiagnostics)
                         // Business methods and external-dependency boundaries have distinct
                         // advice.  Applying both to their union lets framework internals take
@@ -312,6 +333,14 @@ public class AgentMain {
                         .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
                                 builder.visit(Advice.to(DependencySpanAdvice.class)
                                         .on(servletMethodMatcher)))
+                        .type(httpClientMatcher.and(t->config.isHttpEnabled()))
+                        .transform((builder,typeDescription,classLoader,module,protectionDomain)->builder.visit(Advice.to(com.agentmonitor.agent.interceptor.ClientSpanAdvice.class)
+                                .on(ElementMatchers.isMethod().and(ElementMatchers.not(ElementMatchers.isAbstract()))
+                                        .and(ElementMatchers.named("send").or(ElementMatchers.named("sendAsync")).or(ElementMatchers.named("doExecute"))))))
+                        .type(otherClientMatcher.and(t->t.getName().startsWith("redis.")?config.isRedisEnabled():config.isMessagingEnabled()))
+                        .transform((builder,typeDescription,classLoader,module,protectionDomain)->builder.visit(Advice.to(com.agentmonitor.agent.interceptor.ClientSpanAdvice.class)
+                                .on(ElementMatchers.isMethod().and(ElementMatchers.not(ElementMatchers.isAbstract()))
+                                        .and(ElementMatchers.named("executeCommand").or(ElementMatchers.named("basicPublish"))))))
                         .type(jdbcStatementMatcher)
                         .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
                                 builder.visit(Advice.to(JdbcSpanAdvice.class)
@@ -320,7 +349,34 @@ public class AgentMain {
                         .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
                                 builder.visit(Advice.to(JdbcConnectionAdvice.class)
                                         .on(jdbcConnectionMethodMatcher)))
+                        .type(ElementMatchers.<TypeDescription>isSubTypeOf(javax.sql.DataSource.class).and(t -> config.isDiagnosticsEnabled()))
+                        .transform((builder, typeDescription, classLoader, module, protectionDomain) ->
+                                builder.visit(Advice.to(DependencySpanAdvice.class).on(ElementMatchers.named("getConnection")
+                                        .and(ElementMatchers.not(ElementMatchers.isAbstract())))))
+                        .type(ElementMatchers.<TypeDescription>named("java.util.concurrent.ThreadPoolExecutor").and(t -> config.isDiagnosticsEnabled()))
+                        .transform((builder, typeDescription, classLoader, module, protectionDomain) -> builder
+                                .visit(Advice.to(com.agentmonitor.agent.interceptor.ExecutorAdvice.Submit.class).on(ElementMatchers.named("execute")))
+                                .visit(Advice.to(com.agentmonitor.agent.interceptor.ExecutorAdvice.Before.class).on(ElementMatchers.named("beforeExecute")))
+                                .visit(Advice.to(com.agentmonitor.agent.interceptor.ExecutorAdvice.After.class).on(ElementMatchers.named("afterExecute")))
+                                .visit(Advice.to(com.agentmonitor.agent.interceptor.ExecutorAdvice.Reject.class).on(ElementMatchers.named("reject"))))
+                        .type(ElementMatchers.<TypeDescription>named("java.util.concurrent.ScheduledThreadPoolExecutor").and(t -> config.isDiagnosticsEnabled()))
+                        .transform((builder, typeDescription, classLoader, module, protectionDomain) -> builder
+                                .visit(Advice.to(com.agentmonitor.agent.interceptor.ExecutorAdvice.Submit.class).on(ElementMatchers.named("delayedExecute"))))
+                        .type(ElementMatchers.<TypeDescription>named("java.util.concurrent.ForkJoinPool").and(t -> config.isDiagnosticsEnabled()))
+                        .transform((builder, typeDescription, classLoader, module, protectionDomain) -> builder
+                                .visit(Advice.to(com.agentmonitor.agent.interceptor.ExecutorAdvice.Submit.class).on(ElementMatchers.named("externalSubmit").or(ElementMatchers.named("externalPush")).or(ElementMatchers.named("execute")).or(ElementMatchers.named("poolSubmit")))))
+                        .type(ElementMatchers.<TypeDescription>named("java.util.concurrent.ForkJoinTask").and(t -> config.isDiagnosticsEnabled()))
+                        .transform((builder, typeDescription, classLoader, module, protectionDomain) -> builder
+                                .visit(Advice.to(com.agentmonitor.agent.interceptor.ExecutorAdvice.Fork.class).on(ElementMatchers.named("fork")))
+                                .visit(Advice.to(com.agentmonitor.agent.interceptor.ExecutorAdvice.Run.class).on(ElementMatchers.named("doExec"))))
                         .installOn(inst);
+                // Verification can load a DataSource implementation while the outer class is being transformed.
+                // Catch that finite install-time gap before publishing READY.
+                for (Class<?> candidate : inst.getAllLoadedClasses()) {
+                    if (config.isDiagnosticsEnabled() && !candidate.isInterface() && javax.sql.DataSource.class.isAssignableFrom(candidate) && inst.isModifiableClass(candidate)) {
+                        try { inst.retransformClasses(candidate); } catch (Exception failure) { logError("DataSource enhancement failed: " + candidate.getName() + ": " + failure); }
+                    }
+                }
                 boolean stopRequested;
                 synchronized (TRANSFORMER_LOCK) {
                     transformer = installedTransformer;
@@ -335,6 +391,7 @@ public class AgentMain {
                         MethodSpanAdvice.ACTIVE = false;
                         STOP_REQUESTED.set(true);
                     }
+                    if (active && config.isDiagnosticsEnabled()) com.agentmonitor.agent.interceptor.AgentDiagnostics.start(config.getAgentLogDirectory(), config.getCaptureSessionId(), inst);
                 }
                 if (!active) {
                     DetachResult cleanupResult = resetTransformer(installedTransformer);
@@ -392,6 +449,7 @@ public class AgentMain {
      * The callback runs after bytecode restoration but before the Netty output is closed, so a
      * Collector can receive a reliable lifecycle acknowledgement.
      */
+    private static String budgetLogDirectory="",budgetSessionId="";
     public static DetachResult detach() {
         return detach(null);
     }
@@ -401,6 +459,8 @@ public class AgentMain {
             STOP_REQUESTED.set(true);
             MethodSpanAdvice.ACTIVE = false;
             InFlightSpans.Boundary boundary = InFlightSpans.stopAndAwait(STOP_INVOCATION_WAIT_MILLIS);
+            com.agentmonitor.agent.interceptor.RequestMetrics.stop();
+            com.agentmonitor.agent.interceptor.AgentDiagnostics.stop();
             DetachResult restoredResult = restoreClasses();
             if (restoredResult.restored()) {
                 // Existing exits have a bounded opportunity to publish their roots. The Bridge
@@ -428,6 +488,7 @@ public class AgentMain {
         MethodSpanAdvice.ACTIVE            = false;
         MethodSpanAdvice.PKG_FILTERS       = new String[0];
         MethodSpanAdvice.CLS_FILTERS       = new String[0];
+        MethodSpanAdvice.EXCL_PACKAGE_GLOBS = new String[0];
         MethodSpanAdvice.EXCL_PKG_FILTERS  = new String[0];
         MethodSpanAdvice.EXCL_CLS_FILTERS  = new String[0];
         MethodSpanAdvice.EXCL_REGEX_FILTERS = new String[0];
@@ -498,6 +559,7 @@ public class AgentMain {
         if (exporter != null) {
             exporter.close();
             if (exporter instanceof AsyncSpanExporter asyncExporter) {
+                com.agentmonitor.agent.interceptor.AgentDiagnostics.writeBudget(budgetLogDirectory,budgetSessionId,asyncExporter.budgetStatistics());
                 logInfo("stopping exporter; dropped spans=" + asyncExporter.droppedCount()
                         + ", rejected destinations=" + asyncExporter.rejectedDestinationCount());
             }
@@ -806,9 +868,18 @@ public class AgentMain {
             } else if (jdbcStatementMatcher.matches(typeDescription)) {
                 dependencyClasses.incrementAndGet();
                 recordTransformed("jdbc-statement", className, loaded, typeDescription, jdbcStatementMethodMatcher);
+            } else if (ElementMatchers.hasSuperType(ElementMatchers.named("javax.sql.DataSource")).matches(typeDescription)) {
+                dependencyClasses.incrementAndGet();
+                recordTransformed("datasource", className, loaded, typeDescription, ElementMatchers.named("getConnection"));
+            } else if (className.equals("java.util.concurrent.ScheduledThreadPoolExecutor") || className.equals("java.util.concurrent.ThreadPoolExecutor") || className.equals("java.util.concurrent.ForkJoinTask") || className.equals("java.util.concurrent.ForkJoinPool")) {
+                dependencyClasses.incrementAndGet();
+                recordTransformed("executor", className, loaded, typeDescription, ElementMatchers.named("execute").or(ElementMatchers.named("beforeExecute")).or(ElementMatchers.named("afterExecute")).or(ElementMatchers.named("doExec")).or(ElementMatchers.named("fork")).or(ElementMatchers.named("externalSubmit")).or(ElementMatchers.named("externalPush")).or(ElementMatchers.named("poolSubmit")).or(ElementMatchers.named("reject")).or(ElementMatchers.named("delayedExecute")));
             } else if (jdbcConnectionMatcher.matches(typeDescription)) {
                 dependencyClasses.incrementAndGet();
                 recordTransformed("jdbc-connection", className, loaded, typeDescription, jdbcConnectionMethodMatcher);
+            } else if(com.agentmonitor.agent.interceptor.ClientSpanSupport.supported(className)){
+                dependencyClasses.incrementAndGet();recordTransformed("dependency-client",className,loaded,typeDescription,
+                        ElementMatchers.named("send").or(ElementMatchers.named("sendAsync")).or(ElementMatchers.named("doExecute")).or(ElementMatchers.named("executeCommand")).or(ElementMatchers.named("basicPublish")));
             }
         }
 
@@ -817,7 +888,8 @@ public class AgentMain {
                             boolean loaded, Throwable throwable) {
             if (!MethodSpanAdvice.matchesFilter(typeName)
                     && !DependencySpanSupport.isSupportedClassName(typeName)
-                    && !JdbcSpanSupport.isLikelyJdbcClass(typeName)) {
+                    && !JdbcSpanSupport.isLikelyJdbcClass(typeName)
+                    && !typeName.contains("DataSource") && !typeName.startsWith("java.util.concurrent.")) {
                 return;
             }
             failures.incrementAndGet();

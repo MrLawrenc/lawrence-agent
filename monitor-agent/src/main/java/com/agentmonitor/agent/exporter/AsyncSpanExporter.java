@@ -9,6 +9,8 @@ import com.agentmonitor.agent.log.AgentLog;
 import com.agentmonitor.agent.model.SpanData;
 import com.agentmonitor.agent.protocol.SpanPayloadLimits;
 import com.agentmonitor.model.output.ExporterStatistics;
+import com.agentmonitor.model.config.MonitoringConfig;
+import com.agentmonitor.agent.interceptor.OverheadController;
 
 /** Decorator pattern: moves serialization and destination I/O behind a bounded queue. */
 public final class AsyncSpanExporter implements SpanExporter {
@@ -18,7 +20,10 @@ public final class AsyncSpanExporter implements SpanExporter {
     private static final long SHUTDOWN_DRAIN_TIMEOUT_MILLIS = 5_000;
 
     private final SpanExporter delegate;
-    private final BlockingQueue<SpanData> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+    private record Pending(SpanData span,long estimatedBytes){}
+    private final BlockingQueue<Pending> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+    private final long maxResidentBytes;
+    private final AtomicLong residentBytes=new AtomicLong(),residentSpans=new AtomicLong(),byteBudgetDrops=new AtomicLong(),workerWallNanos=new AtomicLong();
     private final AtomicLong enqueuedSpans = new AtomicLong();
     private final AtomicLong queueDrops = new AtomicLong();
     private final AtomicLong deliveryDrops = new AtomicLong();
@@ -31,8 +36,9 @@ public final class AsyncSpanExporter implements SpanExporter {
     private Thread worker;
 
     AsyncSpanExporter(SpanExporter delegate) {
-        this.delegate = delegate;
+        this(delegate,MonitoringConfig.Overhead.defaults());
     }
+    AsyncSpanExporter(SpanExporter delegate,MonitoringConfig.Overhead budget){this.delegate=delegate;this.maxResidentBytes=budget.queueMaxBytes();}
 
     @Override
     public String name() { return "async(" + delegate.name() + ')'; }
@@ -56,13 +62,18 @@ public final class AsyncSpanExporter implements SpanExporter {
     @Override
     public ExportResult export(SpanData span) {
         span = SpanPayloadLimits.limit(span);
+        long bytes=estimatedBytes(span);
         synchronized (lifecycleLock) {
             // STOP closes admission before waiting for the queue. Keeping admission and offer in
             // one critical section establishes a finite queue boundary for drain().
-            if (!accepting || !queue.offer(span)) {
+            if (!accepting || bytes>maxResidentBytes-residentBytes.get()) {
+                if(accepting)byteBudgetDrops.incrementAndGet();
                 queueDrops.incrementAndGet();
                 return ExportResult.rejected();
             }
+            residentBytes.addAndGet(bytes);
+            residentSpans.incrementAndGet();
+            if(!queue.offer(new Pending(span,bytes))){residentBytes.addAndGet(-bytes);residentSpans.decrementAndGet();queueDrops.incrementAndGet();return ExportResult.rejected();}
             enqueuedSpans.incrementAndGet();
             return ExportResult.accepted();
         }
@@ -77,7 +88,7 @@ public final class AsyncSpanExporter implements SpanExporter {
     /** Snapshot used by the stop protocol and session report; it never mutates exporter state. */
     public ExporterStatistics statistics() {
         return new ExporterStatistics(true, enqueuedSpans.get(), queueDrops.get(), deliveryDrops.get(),
-                rejectedDestinations.get(), queue.size());
+                rejectedDestinations.get(), residentSpans.get());
     }
 
     @Override
@@ -116,11 +127,20 @@ public final class AsyncSpanExporter implements SpanExporter {
     private void run() {
         while (running || !queue.isEmpty()) {
             try {
-                SpanData span = queue.poll(QUEUE_POLL_MILLIS, TimeUnit.MILLISECONDS);
-                if (span == null) continue;
-                ExportResult result = delegate.export(span);
-                if (!result.delivered()) deliveryDrops.incrementAndGet();
-                rejectedDestinations.addAndGet(result.rejectedDestinations());
+                Pending first = queue.poll(QUEUE_POLL_MILLIS, TimeUnit.MILLISECONDS);
+                OverheadController.observe(residentBytes.get(),System.nanoTime());
+                if (first == null) continue;
+                java.util.List<Pending> pending = new java.util.ArrayList<>(); pending.add(first); queue.drainTo(pending, 127);
+                java.util.List<SpanData> batch=pending.stream().map(Pending::span).toList();
+                long started=System.nanoTime();
+                try {
+                    java.util.List<ExportResult> results = delegate.exportBatch(batch);
+                    for (ExportResult result : results) {
+                        if (!result.delivered()) deliveryDrops.incrementAndGet();
+                        rejectedDestinations.addAndGet(result.rejectedDestinations());
+                    }
+                } catch (Throwable error) { deliveryDrops.addAndGet(batch.size()); }
+                finally {residentBytes.addAndGet(-pending.stream().mapToLong(Pending::estimatedBytes).sum());residentSpans.addAndGet(-pending.size());workerWallNanos.addAndGet(Math.max(0,System.nanoTime()-started));}
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -128,6 +148,14 @@ public final class AsyncSpanExporter implements SpanExporter {
                 deliveryDrops.incrementAndGet();
             }
         }
+    }
+
+    public java.util.Map<String,Object> budgetStatistics(){return java.util.Map.of("maxResidentEstimatedBytes",maxResidentBytes,"residentEstimatedBytes",residentBytes.get(),"byteBudgetDroppedSpans",byteBudgetDrops.get(),"exportWorkerWallNanos",workerWallNanos.get(),"policy",OverheadController.snapshot());}
+    private static long estimatedBytes(SpanData s){
+        long n=1024;for(String value:new String[]{s.traceId(),s.spanId(),s.parentSpanId(),s.className(),s.methodName(),s.signature(),s.threadName(),s.arguments(),s.returnValue(),s.stackTrace(),s.statusDescription()})n+=64+2L*value.length();
+        for(var a:s.attributes().entrySet())n+=128+2L*(a.getKey().length()+a.getValue().length());
+        for(var e:s.events()){n+=128+2L*e.name().length();for(var a:e.attributes().entrySet())n+=128+2L*(a.getKey().length()+a.getValue().length());}
+        return n;
     }
 
     @Override
@@ -161,7 +189,7 @@ public final class AsyncSpanExporter implements SpanExporter {
     }
 
     private ExporterDrainResult failure(String detail) {
-        return ExporterDrainResult.failed(queue.size(), droppedCount(), rejectedDestinationCount(), detail);
+        return ExporterDrainResult.failed(residentSpans.get(), droppedCount(), rejectedDestinationCount(), detail);
     }
 
     private ExporterDrainResult completeDrain(ExporterDrainResult result) {

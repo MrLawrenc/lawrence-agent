@@ -13,4 +13,39 @@ subprojects {
     tasks.withType(JavaCompile).configureEach {
         options.encoding = 'UTF-8'
     }
+    tasks.named('check') { dependsOn ':verifyArchitecture' }
+}
+
+tasks.register('verifyArchitecture') {
+    group = 'verification'
+    description = 'Checks project dependency direction and forbids UI/Agent implementation leakage.'
+    doLast {
+        def allowed = [
+            'monitor-model': [], 'monitor-agent': ['monitor-model'],
+            'monitor-core': ['monitor-model'], 'monitor-app': ['monitor-core'], 'monitor-cli': ['monitor-core']
+        ]
+        allowed.each { module, dependencies ->
+            def p = project(":${module}")
+            ['api', 'implementation', 'runtimeOnly'].each { configuration ->
+                def c = p.configurations.findByName(configuration)
+                c?.dependencies?.withType(ProjectDependency)?.each { dependency ->
+                    if (!dependencies.contains(dependency.dependencyProject.name))
+                        throw new GradleException("Forbidden dependency: ${module} -> ${dependency.dependencyProject.name}")
+                }
+            }
+            if (module != 'monitor-app') {
+                p.fileTree('src/main/java').matching { include '**/*.java' }.each { source ->
+                    if (source.text =~ /(?m)^import\s+(javafx\.|com\.agentmonitor\.(app|cli)\.)/)
+                        throw new GradleException("UI/CLI dependency in ${source}")
+                }
+                if (p.configurations.runtimeClasspath.files.any { it.name.startsWith('javafx-') })
+                    throw new GradleException("JavaFX leaked into ${module} runtime")
+            }
+            if (module in ['monitor-core', 'monitor-cli']) {
+                if (p.configurations.runtimeClasspath.files.any { it.name.startsWith('byte-buddy-') || it.name.startsWith('monitor-agent') })
+                    throw new GradleException("Agent implementation leaked into host runtime: ${module}")
+            }
+        }
+        println 'Architecture boundaries verified: Agent / App / CLI share only the permitted model/core contracts.'
+    }
 }

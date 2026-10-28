@@ -29,10 +29,25 @@ class JdbcSpanSupportTest {
 
     @AfterEach
     void tearDown() {
+        OverheadController.configure(com.agentmonitor.model.config.MonitoringConfig.Overhead.defaults());
         JdbcSpanSupport.clearStateForTests();
         JdbcSpanSupport.CAPTURE_PARAMETERS = true;
         MethodSpanAdvice.ACTIVE = false;
         MethodSpanAdvice.SPAN_STACK.remove();
+    }
+
+    @Test void adaptiveDetailRecoveryNeverResurrectsAnOldBinding() {
+        Object statement=prepared();JdbcSpanSupport.exit(JdbcSpanSupport.enter("setString",statement,new Object[]{1,"OLD"}),null);
+        OverheadController.configure(new com.agentmonitor.model.config.MonitoringConfig.Overhead(true,65536,75,35,1,50_000_000,1000));
+        long base=System.nanoTime();OverheadController.observe(60000,base+300_000_000);
+        JdbcSpanSupport.exit(JdbcSpanSupport.enter("setString",statement,new Object[]{1,"NEW"}),null);
+        OverheadController.configure(com.agentmonitor.model.config.MonitoringConfig.Overhead.defaults());
+        MethodSpanAdvice.SPAN_STACK.get().push(businessRoot());var execution=JdbcSpanSupport.enter("executeQuery",statement,new Object[0]);
+        assertFalse(execution.attributes().get(SpanAttribute.SQL_PARAMETERS).contains("OLD"));
+        assertEquals("sqlParameters_adaptive",execution.attributes().get(SpanAttribute.CAPTURE_TRUNCATED));JdbcSpanSupport.exit(execution,null);
+        OverheadController.configure(new com.agentmonitor.model.config.MonitoringConfig.Overhead(true,65536,75,35,1,50_000_000,1000));OverheadController.observe(60000,System.nanoTime()+300_000_000);
+        JdbcSpanSupport.exit(JdbcSpanSupport.enter("clearParameters",statement,new Object[0]),null);OverheadController.configure(com.agentmonitor.model.config.MonitoringConfig.Overhead.defaults());
+        execution=JdbcSpanSupport.enter("executeQuery",statement,new Object[0]);assertEquals("{}",execution.attributes().get(SpanAttribute.SQL_PARAMETERS));JdbcSpanSupport.exit(execution,null);
     }
 
     @Test

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java 性能排查"
+  short_description: "通过独立 CLI 采集 JVM 性能证据，跟踪长任务并校验 AI 分析结果"
+  default_prompt: "使用 $java-performance 检查目标 JVM，后台采集性能数据并依据真实证据分析。"

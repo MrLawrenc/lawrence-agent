@@ -20,6 +20,7 @@ public final class AgentResource {
         String host = hostName();
         long pid = ProcessHandle.current().pid();
 
+        put(attributes, "agent.monitor.session.id", config.getCaptureSessionId());
         put(attributes, "service.name", firstNonBlank(config.getServiceName(),
                 System.getProperty("otel.service.name"), System.getenv("OTEL_SERVICE_NAME"),
                 command.isBlank() ? "unknown_service:java" : command));
@@ -33,6 +34,9 @@ public final class AgentResource {
         put(attributes, "process.runtime.name", System.getProperty("java.runtime.name"));
         put(attributes, "process.runtime.version", System.getProperty("java.runtime.version"));
         put(attributes, "host.name", host);
+        put(attributes,"os.name",System.getProperty("os.name"));put(attributes,"os.version",System.getProperty("os.version"));put(attributes,"host.arch",System.getProperty("os.arch"));
+        put(attributes,"host.available_processors",Integer.toString(Runtime.getRuntime().availableProcessors()));
+        try{var digest=java.security.MessageDigest.getInstance("SHA-256");String args=String.join("\n",ManagementFactory.getRuntimeMXBean().getInputArguments());put(attributes,"process.runtime.arguments.sha256",java.util.HexFormat.of().formatHex(digest.digest(args.getBytes(java.nio.charset.StandardCharsets.UTF_8))));}catch(Exception ignored){}
         put(attributes, "telemetry.sdk.name", AGENT_NAME);
         put(attributes, "telemetry.sdk.language", "java");
         put(attributes, "telemetry.sdk.version", implementationVersion());

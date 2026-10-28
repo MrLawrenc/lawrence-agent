@@ -57,6 +57,7 @@ final class NettySpanExporter implements SpanExporter {
     private static final int RECONNECT_MAX_EXPONENT = 5;
 
     private final String host;
+    private final boolean exportSpans;
     private final int port;
     private final SpanPayloadSerializer serializer;
     private final Map<String, String> resourceAttributes;
@@ -86,6 +87,10 @@ final class NettySpanExporter implements SpanExporter {
     }
 
     NettySpanExporter(String host, int port, SpanPayloadSerializer serializer, Map<String, String> resourceAttributes) {
+        this(host, port, serializer, resourceAttributes, true);
+    }
+    NettySpanExporter(String host, int port, SpanPayloadSerializer serializer, Map<String, String> resourceAttributes, boolean exportSpans) {
+        this.exportSpans = exportSpans;
         this.host = host;
         this.port = port;
         this.serializer = serializer;
@@ -157,6 +162,7 @@ final class NettySpanExporter implements SpanExporter {
 
     @Override
     public ExportResult export(SpanData span) {
+        if (!exportSpans) return new ExportResult(0, 0);
         Channel activeChannel = channel.get();
         if (activeChannel == null || !activeChannel.isActive() || !activeChannel.isWritable()) {
             return ExportResult.rejected();

@@ -6,6 +6,7 @@ import java.util.Optional;
 /** Stable output destinations shared by UI configuration and Agent exporter implementations. */
 public enum ExporterType {
     NETTY("netty"),
+    OTLP("otlp"),
     FILE("file");
 
     private final String configValue;

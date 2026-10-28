@@ -1,0 +1,92 @@
+x-java: &java
+  image: ${LAB_IMAGE:?Run the lab through run.py}
+  build: .
+  cpus: 1.0
+  mem_limit: 640m
+  pids_limit: 180
+  volumes:
+    - ${LAB_RUN_DIR:?Run the lab through run.py}/captures:/captures
+    - ${LAB_RUN_DIR}/config:/config:ro
+  environment: &environment
+    SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/lab
+    SPRING_DATASOURCE_USERNAME: lab
+    SPRING_DATASOURCE_PASSWORD: lab-only
+    SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: '2'
+    SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: '1'
+    SPRING_DATASOURCE_HIKARI_REGISTER_MBEANS: 'true'
+    SERVER_TOMCAT_THREADS_MAX: '16'
+    SERVER_TOMCAT_THREADS_MIN_SPARE: '2'
+    LAB_REDIS_HOST: redis
+    LAB_RABBIT_HOST: rabbitmq
+  healthcheck:
+    test: [CMD-SHELL, 'test -f /tmp/lab-ready']
+    interval: 2s
+    timeout: 2s
+    retries: 60
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+    rabbitmq: {condition: service_healthy}
+
+services:
+  gateway:
+    <<: *java
+    environment:
+      <<: *environment
+      LAB_SERVICE: gateway
+      LAB_DOWNSTREAM: http://inventory:8080
+    ports: ['127.0.0.1::8080']
+  inventory:
+    <<: *java
+    environment:
+      <<: *environment
+      LAB_SERVICE: inventory
+      LAB_DOWNSTREAM: http://pricing:8080
+    ports: ['127.0.0.1::8080']
+  pricing:
+    <<: *java
+    environment:
+      <<: *environment
+      LAB_SERVICE: pricing
+      LAB_DOWNSTREAM: ''
+    ports: ['127.0.0.1::8080']
+  postgres:
+    image: postgres:17-alpine
+    mem_limit: 192m
+    cpus: 0.5
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab-only
+      POSTGRES_DB: lab
+    command: [postgres, -c, shared_buffers=16MB, -c, max_connections=24]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U lab -d lab']
+      interval: 2s
+      timeout: 3s
+      retries: 40
+  redis:
+    image: redis:7.4-alpine
+    mem_limit: 64m
+    cpus: 0.25
+    command: [redis-server, --save, '', --appendonly, 'no', --maxmemory, 32mb]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  rabbitmq:
+    image: rabbitmq:4.1-alpine
+    mem_limit: 384m
+    cpus: 0.5
+    environment:
+      RABBITMQ_DEFAULT_USER: lab
+      RABBITMQ_DEFAULT_PASS: lab-only
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: '+S 1:1 +A 2'
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, ping]
+      interval: 4s
+      timeout: 8s
+      retries: 30
+volumes:
+  postgres-data: {}

@@ -53,6 +53,16 @@ final class CompositeSpanExporter implements SpanExporter {
     public void captureQuality(ExporterStatistics statistics) {
         for (SpanExporter exporter : activeExporters) exporter.captureQuality(statistics);
     }
+    @Override public List<ExportResult> exportBatch(List<SpanData> spans) {
+        List<ExportResult> results = new ArrayList<>(java.util.Collections.nCopies(spans.size(), new ExportResult(0, 0)));
+        for (SpanExporter exporter : activeExporters) {
+            List<ExportResult> leaf;
+            try { leaf = exporter.exportBatch(spans); }
+            catch (Throwable error) { leaf = java.util.Collections.nCopies(spans.size(), ExportResult.rejected()); }
+            for (int i = 0; i < spans.size(); i++) results.set(i, results.get(i).combine(leaf.get(i)));
+        }
+        return results;
+    }
 
     @Override
     public void ready() {

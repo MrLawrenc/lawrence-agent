@@ -1,0 +1,47 @@
+plugins {
+    id 'application'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+dependencies {
+    implementation project(':monitor-core')
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+application {
+    mainClass = 'com.agentmonitor.cli.MonitorCli'
+    applicationName = 'monitor'
+    applicationDefaultJvmArgs = ['--add-modules', 'jdk.attach']
+}
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    doFirst { systemProperty 'agent.monitor.cli.testClasspath', sourceSets.main.runtimeClasspath.asPath }
+}
+processResources {
+    from(project(':monitor-agent').tasks.named('agentJar')) {
+        into 'agent'
+        rename { 'monitor-agent.agent' }
+    }
+}
+shadowJar {
+    archiveClassifier.set('all')
+    manifest { attributes('Main-Class': application.mainClass.get()) }
+    mergeServiceFiles()
+}
+sourceSets { liveSmoke { java.srcDir "${rootDir}/scripts/live-smoke" } }
+configurations.liveSmokeImplementation.extendsFrom(configurations.implementation)
+tasks.register('desktopSmoke', JavaExec) {
+    group = 'verification'
+    description = 'Checks the headless production services against an explicit target JVM.'
+    dependsOn tasks.named('liveSmokeClasses'), tasks.named('classes')
+    classpath = sourceSets.liveSmoke.runtimeClasspath + sourceSets.main.output
+    mainClass = 'com.agentmonitor.tools.DesktopSmoke'
+    jvmArgs '--add-modules', 'jdk.attach'
+}
+tasks.register('attachSmoke', JavaExec) {
+    group = 'verification'
+    dependsOn tasks.named('liveSmokeClasses'), project(':monitor-agent').tasks.named('agentJar')
+    classpath = sourceSets.liveSmoke.runtimeClasspath
+    mainClass = 'com.agentmonitor.tools.AttachSmoke'
+    jvmArgs '--add-modules', 'jdk.attach'
+    systemProperty 'agent.monitor.smoke.jar', project(':monitor-agent').layout.buildDirectory.file('libs/monitor-agent.jar').get().asFile.absolutePath
+}

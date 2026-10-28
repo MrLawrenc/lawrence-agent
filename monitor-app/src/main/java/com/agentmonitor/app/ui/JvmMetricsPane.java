@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
-import com.agentmonitor.app.model.JvmMetrics;
+import com.agentmonitor.model.jvm.JvmMetrics;
 
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -22,8 +22,8 @@ public class JvmMetricsPane extends VBox {
             DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
 
     private final Label statusLabel = new Label("等待采集");
-    private final MetricCard heapCard = new MetricCard("堆内存", "—", "等待采集");
-    private final MetricCard nonHeapCard = new MetricCard("非堆内存", "—", "等待采集");
+    private final MetricCard heapCard = new MetricCard("堆内存", "—", "等待采集", true);
+    private final MetricCard nonHeapCard = new MetricCard("非堆内存", "—", "等待采集", true);
     private final MetricCard threadCard = new MetricCard("线程", "—", "等待采集");
     private final MetricCard gcCard = new MetricCard("GC", "—", "等待采集");
     private final MetricCard classCard = new MetricCard("已加载类", "—", "等待采集");
@@ -62,7 +62,7 @@ public class JvmMetricsPane extends VBox {
         GridPane.setHgrow(gcCard, Priority.ALWAYS);
         GridPane.setHgrow(classCard, Priority.ALWAYS);
 
-        Label hint = new Label("旁路采集，不影响当前 Java 方法监控配置。");
+        Label hint = new Label("指标来自目标 JVM，包含应用自身开销。内存条表示已用占容量的比例。");
         hint.getStyleClass().add("metrics-hint-label");
         hint.setWrapText(true);
 
@@ -72,7 +72,7 @@ public class JvmMetricsPane extends VBox {
     public void update(JvmMetrics metrics) {
         if (metrics == null) return;
         if (!metrics.available()) {
-            statusLabel.setText("采集失败");
+            statusLabel.setText("JVM 指标不可用");
             statusLabel.getStyleClass().removeAll("metrics-status-ok");
             statusLabel.getStyleClass().add("metrics-status-error");
             heapCard.setValue("不可用", metrics.error(), 0);
@@ -123,6 +123,9 @@ public class JvmMetricsPane extends VBox {
         private final ProgressBar progressBar = new ProgressBar(0);
 
         MetricCard(String title, String value, String desc) {
+            this(title,value,desc,false);
+        }
+        MetricCard(String title, String value, String desc, boolean showCapacity) {
             getStyleClass().add("metric-card");
             setPadding(new Insets(10));
             setSpacing(6);
@@ -135,8 +138,10 @@ public class JvmMetricsPane extends VBox {
             setMinWidth(0);
             descLabel.setMinWidth(0);
             descLabel.setMaxWidth(Double.MAX_VALUE);
+            descLabel.setWrapText(true);
             progressBar.getStyleClass().add("metric-progress");
             progressBar.setMaxWidth(Double.MAX_VALUE);
+            progressBar.setVisible(showCapacity);progressBar.setManaged(showCapacity);
 
             setValue(value, desc, 0);
             getChildren().addAll(titleLabel, valueLabel, descLabel, progressBar);

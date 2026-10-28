@@ -1,6 +1,6 @@
 # Agent Monitor 配置示例（schema v2）。此文件可直接导入 App。
-# App 会自动填充本机 Netty Collector 的 host / port；netty 同时承担实时 Span
-# 传输与 STOP 后的字节码还原确认，因此 output.exporters 必须保留 netty。
+# App / CLI 自动填充本机 OTLP receiver 地址和独立 STOP 控制通道。
+# 默认使用 otlp 数据面，netty 仅作为旧数据协议的兼容选项。
 #
 # 配置格式版本；当前仅支持 2。
 version: 2
@@ -51,8 +51,10 @@ sampling:
 output:
   # 采集会话根目录；每次采集会在其下创建 <timestamp>/session-<id>/。支持 ~。
   sessionRootDir: "~/Downloads/agent-monitor-captures"
-  # Span 导出端列表；必须包含 netty（实时数据与停止控制通道），file 用于本地离线复盘。
-  exporters: [netty, file]
+  # Span 导出端列表；必须包含 otlp 或兼容的 netty，file 用于本地离线复盘。
+  exporters: [otlp, file]
+  # 可选：转发给官方 Collector；必须包含完整 traces 路径。
+  otlpForwardEndpoint: ""
   # 控制 Span 中是否记录原始诊断值；关闭可降低数据量并减少敏感数据暴露。
   capture:
     # 是否记录方法入参；关闭可降低数据量并减少敏感数据暴露。
@@ -87,8 +89,12 @@ output:
 dependencies:
   # 是否采集 JDBC 调用及 SQL Span。
   jdbc: true
-  # 是否采集 HTTP 客户端调用 Span。
+  # Servlet 入口、独立接口统计、支持的 HTTP 客户端及上下文传播。
   http: true
+  # Jedis Connection.executeCommand 同步命令。
+  redis: true
+  # RabbitMQ basicPublish 客户端发布调用，不代表 broker confirm。
+  messaging: true
 
 # 离线链路分析与瓶颈识别策略。
 analysis:
@@ -108,3 +114,19 @@ analysis:
   maxBottlenecksPerTrace: 5
   # 分析调用树时允许遍历的最大层级，超过部分不再展开，必须大于 0。
   maxDepth: 50
+
+# JVM 诊断证据由 App / CLI 控制端采集；JFR 和触发默认关闭。
+diagnostics:
+  enabled: true
+  intervalMs: 1000
+  threadIntervalMs: 5000
+  maxSamples: 3600
+  jfr: false
+  exceptionEvents: false
+  trigger:
+    enabled: false
+    cpuPercent: 85
+    heapPercent: 90
+    blockedThreads: 20
+    consecutiveSamples: 3
+    slowCallMs: 3000

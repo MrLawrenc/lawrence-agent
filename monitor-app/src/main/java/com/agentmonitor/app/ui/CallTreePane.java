@@ -5,23 +5,16 @@ import java.util.List;
 import java.util.Locale;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
-import java.util.function.Consumer;
 
 import com.agentmonitor.app.model.CallNode;
-import com.agentmonitor.model.span.SpanAttribute;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import javafx.application.Platform;
-import javafx.beans.property.ReadOnlyObjectWrapper;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
-import javafx.scene.control.ButtonType;
-import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
-import javafx.scene.control.ScrollPane;
-import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.control.TreeItem;
@@ -30,7 +23,6 @@ import javafx.scene.control.TreeTableColumn;
 import javafx.scene.control.TreeTableRow;
 import javafx.scene.control.TreeTableView;
 import javafx.scene.control.cell.TreeItemPropertyValueFactory;
-import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
@@ -49,9 +41,15 @@ public class CallTreePane extends VBox {
     private final TextField searchField;
     private final Button pauseOutputButton;
     private final VBox emptyState;
+    private final javafx.scene.control.SplitPane contentSplit=new javafx.scene.control.SplitPane();
+    private final CallDetailPane detailPane;
+    private final Button detailsToggle=new Button("调用详情");
+    private CallNode inspectedNode;
+    private boolean rebuildingRows;
     private final Label emptyTitle;
     private final Label emptyDescription;
     private final List<TreeItem<CallNode>> allRoots = new ArrayList<>();
+    private final java.util.Set<String> countedTraces = new java.util.HashSet<>();
     private volatile long totalRoots = 0;
     private volatile boolean outputPaused = false;
     /** Online and offline data share the renderer, but the latter has no stream to pause. */
@@ -71,7 +69,8 @@ public class CallTreePane extends VBox {
         treeTable = new TreeTableView<>(rootItem);
         treeTable.setShowRoot(false);
         treeTable.getStyleClass().add("call-tree-table");
-        treeTable.setColumnResizePolicy(TreeTableView.UNCONSTRAINED_RESIZE_POLICY);
+        treeTable.setColumnResizePolicy(TreeTableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        treeTable.setFixedCellSize(38);treeTable.setId("call-tree-table");
         VBox.setVgrow(treeTable, Priority.ALWAYS);
 
         TreeTableColumn<CallNode, String> methodCol = new TreeTableColumn<>("方法");
@@ -81,33 +80,29 @@ public class CallTreePane extends VBox {
 
         TreeTableColumn<CallNode, String> threadCol = new TreeTableColumn<>("线程");
         threadCol.setCellValueFactory(new TreeItemPropertyValueFactory<>("thread"));
-        threadCol.setPrefWidth(140);
+        threadCol.setPrefWidth(190);threadCol.setMinWidth(130);threadCol.setMaxWidth(280);
+        threadCol.setCellFactory(col->new TreeTableCell<>(){
+            @Override protected void updateItem(String value,boolean empty){super.updateItem(value,empty);setText(empty?null:value);setTooltip(empty||value==null?null:new Tooltip(value));}
+        });
 
         TreeTableColumn<CallNode, Long> durCol = new TreeTableColumn<>("耗时");
         durCol.setCellValueFactory(c -> c.getValue().getValue().durationNanosProperty().asObject());
         durCol.setCellFactory(col -> new DurationCell());
-        durCol.setPrefWidth(100);
+        durCol.setPrefWidth(116);durCol.setMinWidth(108);durCol.setMaxWidth(136);
         durCol.setSortType(TreeTableColumn.SortType.DESCENDING);
 
-        TreeTableColumn<CallNode, Long> pctCol = new TreeTableColumn<>("百分比");
+        TreeTableColumn<CallNode, Long> pctCol = new TreeTableColumn<>("占根调用");
         pctCol.setCellValueFactory(c -> c.getValue().getValue().durationNanosProperty().asObject());
         pctCol.setCellFactory(col -> new PercentCell());
-        pctCol.setPrefWidth(56);
+        pctCol.setPrefWidth(96);pctCol.setMinWidth(90);
         pctCol.setResizable(false);
         pctCol.getStyleClass().add("percent-col");
-
-        TreeTableColumn<CallNode, CallNode> detailCol = new TreeTableColumn<>("");
-        detailCol.setCellValueFactory(c -> new ReadOnlyObjectWrapper<>(c.getValue().getValue()));
-        detailCol.setCellFactory(col -> new ButtonCell(CallTreePane.this::showDetailDialog));
-        detailCol.setPrefWidth(76);
-        detailCol.setResizable(false);
-        detailCol.setSortable(false);
 
         treeTable.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
             TreeItem<CallNode> selected = treeTable.getSelectionModel().getSelectedItem();
             if (selected == null) return;
             if (event.getCode() == KeyCode.ENTER) {
-                showDetailDialog(selected.getValue());
+                showDetails(selected.getValue());
                 event.consume();
             } else if (event.getCode() == KeyCode.RIGHT && !selected.isLeaf()) {
                 selected.setExpanded(true);
@@ -125,17 +120,12 @@ public class CallTreePane extends VBox {
             empty.setMaxSize(0, 0);
             empty.setMouseTransparent(true);
             row.setDisclosureNode(empty);
+            row.setOnMouseClicked(event->{if(event.getClickCount()==2&&!row.isEmpty())showDetails(row.getItem());});
             return row;
         });
 
-        treeTable.getColumns().addAll(methodCol, threadCol, durCol, pctCol, detailCol);
-        methodCol.prefWidthProperty().bind(
-                treeTable.widthProperty()
-                         .subtract(threadCol.widthProperty())
-                         .subtract(durCol.widthProperty())
-                         .subtract(pctCol.widthProperty())
-                         .subtract(detailCol.widthProperty())
-                         .subtract(20));
+        treeTable.getColumns().addAll(methodCol,threadCol,durCol,pctCol);
+        methodCol.setMinWidth(200);
         treeTable.setPlaceholder(new Label(""));
 
         searchField = new TextField();
@@ -160,7 +150,15 @@ public class CallTreePane extends VBox {
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox toolbar = new HBox(8, titleLabel, spacer, searchField, pauseOutputButton, clearBtn);
+        detailsToggle.setId("call-show-details");detailsToggle.getStyleClass().add("ghost-btn");
+        detailsToggle.setOnAction(e->{if(contentSplit.getItems().size()>1){hideDetails();return;}
+            var selected=treeTable.getSelectionModel().getSelectedItem();
+            if(selected==null&&!rootItem.getChildren().isEmpty()){selected=rootItem.getChildren().get(0);treeTable.getSelectionModel().select(selected);}
+            if(selected!=null)showDetails(selected.getValue());
+        });
+        searchField.setMinWidth(140);titleLabel.setMinWidth(130);
+        SearchBox search = new SearchBox(searchField,"方法或线程",true);search.setMinWidth(140);search.setPrefWidth(220);
+        javafx.scene.layout.FlowPane toolbar = new javafx.scene.layout.FlowPane(8,6,titleLabel,search,pauseOutputButton,clearBtn,detailsToggle);
         toolbar.setPadding(new Insets(4, 8, 4, 0));
         toolbar.setAlignment(Pos.CENTER_LEFT);
 
@@ -176,21 +174,40 @@ public class CallTreePane extends VBox {
 
         StackPane treeArea = new StackPane(treeTable, emptyState);
         StackPane.setMargin(emptyState, new Insets(32, 0, 0, 0));
-        VBox.setVgrow(treeArea, Priority.ALWAYS);
-
-        getChildren().addAll(toolbar, treeArea);
+        treeArea.setMinWidth(370);
+        detailPane=new CallDetailPane(this::hideDetails);
+        contentSplit.getItems().add(treeArea);VBox.setVgrow(contentSplit,Priority.ALWAYS);
+        treeTable.getSelectionModel().selectedItemProperty().addListener((obs,old,item)->{
+            if(item!=null&&contentSplit.getItems().size()>1){inspectedNode=item.getValue();detailPane.show(item.getValue(),PercentCell.getRootDuration(item));}
+            else if(item==null&&!rebuildingRows)hideDetails();
+        });
+        getChildren().addAll(toolbar,contentSplit);
     }
+
+    public long getObservedRootCount() { return totalRoots; }
 
     public void addRootNode(CallNode node) {
         if (outputPaused) return;
-        Platform.runLater(() -> {
-            if (outputPaused) return;
-            TreeItem<CallNode> item = buildTreeItem(node, 1);
-            allRoots.add(0, item);
-            totalRoots++;
-            if (allRoots.size() > 500) allRoots.remove(allRoots.size() - 1);
-            applyFilter(searchField.getText());
+        Platform.runLater(() -> { if (!outputPaused) addRootOnFx(node); });
+    }
+    private void addRootOnFx(CallNode node) {
+        TreeItem<CallNode> item = buildTreeItem(node, 1);
+        if (!node.getTraceId().isBlank()) allRoots.removeIf(previous -> node.getTraceId().equals(previous.getValue().getTraceId()));
+        allRoots.add(0, item);
+        if (node.getTraceId().isBlank() || countedTraces.add(node.getTraceId())) totalRoots++;
+        if (allRoots.size() > 500) allRoots.remove(allRoots.size() - 1);
+        applyFilter(searchField.getText());
+    }
 
+    /** All JavaFX state is created on the application thread, after leaving the collector. */
+    public void addTrace(com.agentmonitor.model.trace.TraceNode node) {
+        addTrace(node, () -> true);
+    }
+    public void addTrace(com.agentmonitor.model.trace.TraceNode node, java.util.function.BooleanSupplier stillCurrent) {
+        if (outputPaused) return;
+        Platform.runLater(() -> {
+            if (outputPaused || !stillCurrent.getAsBoolean()) return;
+            addRootOnFx(CallNode.fromTrace(node));
         });
     }
 
@@ -209,11 +226,12 @@ public class CallTreePane extends VBox {
      * This method must be invoked from the JavaFX application thread.
      */
     public void showOfflineReplay(List<CallNode> roots) {
+        hideDetails();
         outputPaused = false;
         titlePrefix = "离线调用链";
         pauseOutputButton.setText("暂停输出");
         pauseOutputButton.setDisable(true);
-        allRoots.clear();
+        allRoots.clear(); countedTraces.clear();
         rootItem.getChildren().clear();
         if (roots != null) {
             for (CallNode root : roots) {
@@ -237,161 +255,15 @@ public class CallTreePane extends VBox {
     }
 
 
-    private void showDetailDialog(CallNode node) {
-        String sig    = parseDescriptor(node.getSignature());
-        String raw    = node.getSignature();
-        String status = node.isError() ? "\u5f02\u5e38" : "\u6b63\u5e38";
-
-        GridPane grid = new GridPane();
-        grid.setHgap(12);
-        grid.setVgap(8);
-        grid.setPadding(new Insets(12));
-
-        int r = 0;
-        grid.add(bold("\u7c7b\u540d"),  0, r); grid.add(mono(node.getFullClassName()), 1, r++);
-        grid.add(bold("\u65b9\u6cd5"),  0, r); grid.add(mono(node.getMethodName2()),   1, r++);
-        grid.add(bold("\u7b7e\u540d"),  0, r); grid.add(mono(sig.isEmpty() ? raw : sig), 1, r++);
-        grid.add(bold("\u7ebf\u7a0b"),  0, r); grid.add(mono(node.getThread()),          1, r++);
-        grid.add(bold("\u8017\u65f6"),  0, r); grid.add(mono(node.getDurationDisplay()), 1, r++);
-        grid.add(bold("\u72b6\u6001"),  0, r); grid.add(mono(status),                    1, r++);
-        r = addAttributeRow(grid, node, SpanAttribute.ERROR_TYPE, "错误类型", r);
-        r = addAttributeRow(grid, node, SpanAttribute.HTTP_RESPONSE_STATUS_CODE, "HTTP 状态", r);
-        r = addAttributeRow(grid, node, SpanAttribute.DB_RESPONSE_STATUS_CODE, "数据库状态", r);
-        r = addAttributeRow(grid, node, SpanAttribute.DEPENDENCY_TYPE, "依赖类型", r);
-        r = addAttributeRow(grid, node, SpanAttribute.DATASOURCE_NAME, "数据源", r);
-        r = addAttributeRow(grid, node, SpanAttribute.SQL, "SQL", r);
-        r = addAttributeRow(grid, node, SpanAttribute.SQL_PARAMETERS, "SQL 参数", r);
-        r = addAttributeRow(grid, node, SpanAttribute.HTTP_PARAMETERS, "HTTP 参数", r);
-        if (!node.getAttributes().isEmpty()) {
-            addValueRow(grid, "采集属性", formatAttributes(node.getAttributes()), r++);
-        }
-        if (!node.getArgs().isEmpty()) {
-            addValueRow(grid, "\u53c2\u6570\u503c", node.getArgs(), r++);
-        }
-        String retVal = node.getRetVal();
-        if (retVal != null && !retVal.isEmpty()) {
-            addValueRow(grid, "\u8fd4\u56de\u503c", retVal, r++);
-        } else if (node.isError()) {
-            grid.add(bold("\u8fd4\u56de\u503c"), 0, r); grid.add(mono("\u5f02\u5e38\u9000\u51fa"), 1, r++);
-        }
-        if (node.isError() && node.getStackTrace() != null && !node.getStackTrace().isEmpty()) {
-            grid.add(bold("异常堆栈"), 0, r);
-            TextArea stackArea = readonlyTextArea(node.getStackTrace(), 780, 260);
-            GridPane.setHgrow(stackArea, Priority.ALWAYS);
-            grid.add(stackArea, 1, r++);
-        }
-        if (!raw.isEmpty()) {
-            grid.add(bold("JVM \u63cf\u8ff0"), 0, r); grid.add(mono(raw), 1, r);
-        }
-
-        GridPane.setHgrow(grid.getChildren().get(1), Priority.ALWAYS);
-
-        Dialog<Void> dialog = new Dialog<>();
-        dialog.setTitle("\u65b9\u6cd5\u8be6\u60c5");
-        dialog.setHeaderText(null);
-        dialog.getDialogPane().setContent(new ScrollPane(grid));
-        dialog.getDialogPane().setPrefSize(920, 680);
-        dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
-        dialog.getDialogPane().getStylesheets().addAll(
-                getScene() != null ? getScene().getStylesheets() : List.of());
-        dialog.showAndWait();
+    private void showDetails(CallNode node) {
+        inspectedNode=node;
+        if(contentSplit.getItems().size()==1){contentSplit.getItems().add(detailPane);contentSplit.setDividerPositions(.66);}
+        detailsToggle.setText("收起详情");
+        detailPane.show(node,PercentCell.getRootDuration(treeTable.getSelectionModel().getSelectedItem()));
     }
+    private void hideDetails(){contentSplit.getItems().remove(detailPane);inspectedNode=null;detailsToggle.setText("调用详情");}
 
-    private int addAttributeRow(GridPane grid, CallNode node, String attributeName, String label, int row) {
-        String value = node.getAttributes().get(attributeName);
-        if (value == null || value.isBlank()) return row;
-        addValueRow(grid, label, value, row);
-        return row + 1;
-    }
-
-    private static String formatAttributes(java.util.Map<String, String> attributes) {
-        try {
-            return JSON_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(attributes);
-        } catch (Exception ignored) {
-            return String.valueOf(attributes);
-        }
-    }
-
-    private void addValueRow(GridPane grid, String labelText, String fullText, int row) {
-        grid.add(bold(labelText), 0, row);
-        String preview = fullText.length() > 80 ? fullText.substring(0, 80) + "…" : fullText;
-        Label lbl = mono(preview);
-        if (fullText.length() <= 80) {
-            grid.add(lbl, 1, row);
-            return;
-        }
-        Button viewBtn = new Button("查看");
-        viewBtn.setStyle("-fx-font-size:11px; -fx-padding:1 6;");
-        viewBtn.setOnAction(e -> {
-            TextArea ta = readonlyTextArea(fullText, 780, 460);
-            Button formatBtn = new Button("JSON 格式化");
-            formatBtn.getStyleClass().add("ghost-btn");
-            formatBtn.setOnAction(event -> {
-                try {
-                    ta.setText(formatJsonText(ta.getText()));
-                    ta.positionCaret(0);
-                } catch (Exception ex) {
-                    Dialog<Void> error = new Dialog<>();
-                    error.setTitle("JSON 格式化失败");
-                    error.setHeaderText(null);
-                    error.getDialogPane().setContent(new Label("当前内容不是合法 JSON，无法格式化。"));
-                    error.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
-                    error.getDialogPane().getStylesheets().addAll(
-                            getScene() != null ? getScene().getStylesheets() : List.of());
-                    error.showAndWait();
-                }
-            });
-            HBox tools = new HBox(8, formatBtn);
-            tools.setAlignment(Pos.CENTER_RIGHT);
-            VBox content = new VBox(8, tools, ta);
-            VBox.setVgrow(ta, Priority.ALWAYS);
-            Dialog<Void> d = new Dialog<>();
-            d.setTitle(labelText);
-            d.setHeaderText(null);
-            d.getDialogPane().setContent(content);
-            d.getDialogPane().setPrefSize(840, 560);
-            d.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
-            d.getDialogPane().getStylesheets().addAll(
-                    getScene() != null ? getScene().getStylesheets() : List.of());
-            d.showAndWait();
-        });
-        HBox box = new HBox(6, lbl, viewBtn);
-        box.setAlignment(Pos.CENTER_LEFT);
-        grid.add(box, 1, row);
-    }
-
-    private static Label bold(String text) {
-        Label l = new Label(text);
-        l.setStyle("-fx-font-weight: bold; -fx-text-fill: #334155;");
-        return l;
-    }
-    private static Label mono(String text) {
-        Label l = new Label(text);
-        l.setStyle("-fx-font-family: 'Menlo', 'JetBrains Mono', monospace; -fx-text-fill: #111827;");
-        l.setWrapText(true);
-        l.setMaxWidth(720);
-        return l;
-    }
-
-    private static TextArea readonlyTextArea(String text, double width, double height) {
-        TextArea area = new TextArea(text);
-        area.setEditable(false);
-        area.setWrapText(false);
-        area.setPrefSize(width, height);
-        area.setStyle("""
-                -fx-font-family: 'Menlo', 'JetBrains Mono', monospace;
-                -fx-font-size: 12px;
-                -fx-text-fill: #111827;
-                -fx-control-inner-background: #F8FAFC;
-                -fx-background-color: #F8FAFC;
-                -fx-border-color: #CBD5E1;
-                -fx-border-radius: 8;
-                -fx-background-radius: 8;
-                """);
-        return area;
-    }
-
-    private static String formatJsonText(String rawText) throws Exception {
+    static String formatJsonText(String rawText) throws Exception {
         String text = rawText == null ? "" : rawText.trim();
         if (text.isEmpty()) return text;
 
@@ -504,7 +376,7 @@ public class CallTreePane extends VBox {
         return !out.isEmpty() && Character.isWhitespace(out.charAt(out.length() - 1));
     }
 
-    private static String parseDescriptor(String desc) {
+    static String parseDescriptor(String desc) {
         if (desc == null || desc.isEmpty()) return "";
         try {
             int parenClose = desc.lastIndexOf(')');
@@ -540,13 +412,15 @@ public class CallTreePane extends VBox {
     }
 
     public void clear() {
-        allRoots.clear();
+        hideDetails();
+        allRoots.clear(); countedTraces.clear();
         rootItem.getChildren().clear();
         totalRoots = 0;
         applyFilter(searchField.getText());
     }
 
     private void applyFilter(String text) {
+        rebuildingRows=true;
         rootItem.getChildren().clear();
         List<TreeItem<CallNode>> filtered = new ArrayList<>();
         String needle = text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
@@ -561,12 +435,24 @@ public class CallTreePane extends VBox {
         if (!treeTable.getSortOrder().isEmpty()) {
             treeTable.sort();
         }
+        rebuildingRows=false;
+        if(inspectedNode!=null){
+            TreeItem<CallNode> match=null;
+            for(var item:filtered){match=findInspected(item,inspectedNode);if(match!=null)break;}
+            if(match==null)hideDetails();
+            else{treeTable.getSelectionModel().select(match);inspectedNode=match.getValue();detailPane.show(inspectedNode,PercentCell.getRootDuration(match));}
+        }
         emptyState.setVisible(filtered.isEmpty());
         boolean hasCalls = !allRoots.isEmpty();
         emptyTitle.setText(hasCalls ? "没有匹配的调用链" : "等待第一条调用链");
         emptyDescription.setText(hasCalls ? "试试其他方法名、线程名，或清空搜索条件。"
                 : "开始监控后，在目标应用中执行一次业务操作。");
         updateTitle(filtered.size());
+    }
+    private static TreeItem<CallNode> findInspected(TreeItem<CallNode> item,CallNode previous){
+        CallNode node=item.getValue();String span=previous.getAttributes().getOrDefault("agent.span.id","");
+        if(node==previous||(!span.isBlank()&&!previous.getTraceId().isBlank()&&previous.getTraceId().equals(node.getTraceId())&&span.equals(node.getAttributes().get("agent.span.id"))))return item;
+        for(var child:item.getChildren()){var match=findInspected(child,previous);if(match!=null)return match;}return null;
     }
 
     private boolean matchesCall(TreeItem<CallNode> item, String needle) {
@@ -643,7 +529,9 @@ public class CallTreePane extends VBox {
                     toggleLbl.setGraphic(null);
                 }
                 nameLbl.setText(item);
-                tip.setText(item);
+                CallNode value=ti==null?null:ti.getValue();
+                tip.setText(value==null?item:value.getFullClassName()+"#"+value.getMethodName2()+value.getSignature());
+                nameLbl.setMinWidth(0);nameLbl.setMaxWidth(Double.MAX_VALUE);HBox.setHgrow(nameLbl,Priority.ALWAYS);
                 setText(null);
                 setGraphic(content);
             }
@@ -660,7 +548,7 @@ public class CallTreePane extends VBox {
             } else {
                 CallNode node = getTableRow() != null ? getTableRow().getItem() : null;
                 if (node != null) {
-                    setText(node.getDurationDisplay() + "  \u25CF");
+                    setText(node.getDurationDisplay());
                     getStyleClass().add("cell-" + node.getDurationStyle());
                 } else {
                     setText(item + " ns");
@@ -684,7 +572,8 @@ public class CallTreePane extends VBox {
             long rootNs = getRootDuration(getTreeTableRow().getTreeItem());
             if (rootNs <= 0) { setText("—"); return; }
             double pct = node.getDurationNanos() * 100.0 / rootNs;
-            setText(String.format("%.0f%%", Math.min(pct, 100.0)));
+            setText(String.format("%.0f%%",pct));
+            setTooltip(new Tooltip("当前调用耗时 / 本地根调用耗时；包含子调用，不是 CPU 占用。"));
             getStyleClass().add("cell-" + node.getDurationStyle());
         }
 
@@ -698,22 +587,4 @@ public class CallTreePane extends VBox {
         }
     }
 
-    private static class ButtonCell extends TreeTableCell<CallNode, CallNode> {
-        private final Button btn = new Button("详情");
-
-        ButtonCell(Consumer<CallNode> action) {
-            btn.getStyleClass().add("detail-btn");
-            btn.setMinWidth(48);
-            btn.setOnAction(e -> {
-                if (getItem() != null) action.accept(getItem());
-            });
-        }
-
-        @Override
-        protected void updateItem(CallNode item, boolean empty) {
-            super.updateItem(item, empty);
-            setText(null);
-            setGraphic(empty || item == null ? null : btn);
-        }
-    }
 }

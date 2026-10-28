@@ -1,2 +1,2 @@
 rootProject.name = 'agent-monitor'
-include 'monitor-model', 'monitor-agent', 'monitor-app'
+include 'monitor-model', 'monitor-agent', 'monitor-core', 'monitor-app', 'monitor-cli'

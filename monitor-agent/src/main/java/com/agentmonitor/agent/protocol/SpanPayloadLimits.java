@@ -102,7 +102,7 @@ public final class SpanPayloadLimits {
         private Map<String, String> attributes(Map<String, String> source) {
             Map<String, String> result = new LinkedHashMap<>();
             // These attributes describe whether AI may trust the remaining evidence.
-            for (String key : new String[]{SpanAttribute.SAMPLING_REASON, SpanAttribute.SAMPLING_RATE,
+            for (String key : new String[]{SpanAttribute.SAMPLING_REASON, SpanAttribute.SAMPLING_RATE, "agent.trace.completed_spans", "agent.local.root_span_id", "agent.remote_parent", "agent.local.detached", "thread.id", "agent.overhead.mode",
                     SpanAttribute.CAPTURE_TRUNCATED, SpanAttribute.PAYLOAD_TRUNCATED,
                     SpanAttribute.BATCH_PARAMETERS_TRUNCATED, SpanAttribute.BATCH_PARAMETER_SAMPLES,
                     SpanAttribute.DB_OPERATION_BATCH_SIZE, SpanAttribute.OBSERVER_EXCLUDED_NANOS}) {

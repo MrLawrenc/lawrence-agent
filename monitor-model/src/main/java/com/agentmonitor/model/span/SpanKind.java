@@ -4,6 +4,9 @@ package com.agentmonitor.model.span;
 public enum SpanKind {
     BUSINESS,
     HTTP_SERVER,
+    HTTP_CLIENT,
+    REDIS,
+    MESSAGING,
     SQL;
 
     public static SpanKind fromWireValue(String value) {

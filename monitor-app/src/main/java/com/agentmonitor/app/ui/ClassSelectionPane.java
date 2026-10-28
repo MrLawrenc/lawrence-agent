@@ -1,274 +1,464 @@
 package com.agentmonitor.app.ui;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import com.agentmonitor.core.service.JvmService;
+import com.agentmonitor.core.service.JvmClassIndexCache;
+import com.agentmonitor.core.util.AppLog;
+import com.agentmonitor.core.scope.ScopeClassIndex;
+import com.agentmonitor.model.config.MonitoringConfig;
+import com.agentmonitor.model.config.ScopeSelection;
+import com.fasterxml.jackson.databind.*;
+import javafx.application.Platform;
+import javafx.animation.PauseTransition;
+import javafx.beans.property.*;
+import javafx.collections.*;
+import javafx.geometry.*;
+import javafx.scene.control.*;
+import javafx.scene.control.cell.CheckBoxTableCell;
+import javafx.scene.layout.*;
+import javafx.util.Duration;
+import java.nio.file.*;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
-import com.agentmonitor.app.service.JvmService;
-import com.agentmonitor.app.service.JvmClassIndexCache;
-import com.agentmonitor.app.util.AppLog;
-import com.agentmonitor.model.config.PackagePatternMatcher;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import javafx.application.Platform;
-import javafx.animation.KeyFrame;
-import javafx.animation.Timeline;
-import javafx.beans.property.BooleanProperty;
-import javafx.beans.property.SimpleBooleanProperty;
-import javafx.beans.property.SimpleStringProperty;
-import javafx.beans.property.StringProperty;
-import javafx.collections.FXCollections;
-import javafx.collections.ObservableList;
-import javafx.geometry.Insets;
-import javafx.geometry.Pos;
-import javafx.scene.Node;
-import javafx.scene.control.Alert;
-import javafx.scene.control.Button;
-import javafx.scene.control.ButtonType;
-import javafx.scene.control.CheckBox;
-import javafx.scene.control.CheckBoxTreeItem;
-import javafx.scene.control.Dialog;
-import javafx.scene.control.Label;
-import javafx.scene.control.SplitPane;
-import javafx.scene.control.TableCell;
-import javafx.scene.control.TableColumn;
-import javafx.scene.control.TableView;
-import javafx.scene.control.TextArea;
-import javafx.scene.control.TextField;
-import javafx.scene.control.TreeItem;
-import javafx.scene.control.TreeView;
-import javafx.scene.control.cell.CheckBoxTableCell;
-import javafx.scene.control.cell.CheckBoxTreeCell;
-import javafx.scene.control.cell.PropertyValueFactory;
-import javafx.scene.layout.HBox;
-import javafx.scene.layout.FlowPane;
-import javafx.scene.control.Tooltip;
-import javafx.scene.layout.Priority;
-import javafx.scene.layout.Region;
-import javafx.scene.layout.VBox;
-
-public class ClassSelectionPane extends SplitPane {
-
+/** A rule editor with independent browsing. Only explicit edits change the scope contract. */
+public class ClassSelectionPane extends VBox {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int ACTUAL_RESULT_READ_ATTEMPTS = 15;
     private static final long ACTUAL_RESULT_READ_RETRY_MILLIS = 200;
-
-    private final TreeView<String> packageTree;
-    private final CheckBoxTreeItem<String> rootItem = new CheckBoxTreeItem<>("全部包");
-    private final ObservableList<ClassRow> allRows = FXCollections.observableArrayList();
-    private final ObservableList<ClassRow> visibleRows = FXCollections.observableArrayList();
-    private final List<ClassRow> filteredRows = new ArrayList<>();
-    private final Map<String, List<ClassRow>> packageToRows = new LinkedHashMap<>();
-    private final Map<String, List<ClassRow>> packageToDescendantRows = new LinkedHashMap<>();
-    private final List<String> allPackages = new ArrayList<>();
-    private final Set<String> selectedPackageSet = new LinkedHashSet<>();
-    private final LinkedHashSet<ClassRow> selectedRows = new LinkedHashSet<>();
-    private final Set<String> searchPathSet = new LinkedHashSet<>();
-    private final Set<String> searchHitSet = new LinkedHashSet<>();
-    private final Set<String> extraClassExcludeConditions = new LinkedHashSet<>();
-    /** Exact exclusions are maintained incrementally so one checkbox change never rescans all classes. */
-    private final Set<String> explicitExcludedClassNames = new LinkedHashSet<>();
-    private final Set<String> excludedMethodPatterns = new LinkedHashSet<>();
-    // Kept separately from the loaded rows because configuration can arrive before the
-    // asynchronous JVM class scan completes.  Reapplying it after loading makes the UI
-    // reflect exactly the scope that will be passed to the Agent.
-    private List<String> appliedIncludePackages = List.of();
-    private List<String> appliedIncludeClasses = List.of();
-    private List<String> appliedClassExcludeConditions = List.of();
-    private List<String> appliedMethodExcludePatterns = ClassSelectionRules.defaultExcludedMethodPatterns();
-    private boolean hasAppliedConfiguration;
-    private final List<Node> loadingLockedControls = new ArrayList<>();
-    private final TableView<ClassRow> classTable = new TableView<>(visibleRows);
-    private final TextField classSearchField = new TextField();
-    private final TextField packageSearchField = new TextField();
-    private final Label classSummaryLabel = new Label("正在读取目标 JVM 已加载类...");
-    private final Label pageLabel = new Label();
-    private final Button previousPageButton = new Button("‹ 上一页");
-    private final Button nextPageButton = new Button("下一页 ›");
-    private final Label packageSummaryLabel = new Label("包选择（共 0 个包）");
+    private static final int PAGE_SIZE = 150;
     private final String pid;
-    private final JvmClassIndexCache classIndexCache;
+    private final JvmClassIndexCache cache;
+    private final ExecutorService worker = Executors.newFixedThreadPool(2, task -> {
+        Thread thread = new Thread(task, "scope-editor-worker"); thread.setDaemon(true); return thread;
+    });
+    private final ThreadPoolExecutor queryWorker = new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(1),task -> {
+        Thread thread=new Thread(task,"scope-latest-query");thread.setDaemon(true);return thread;
+    },new ThreadPoolExecutor.DiscardOldestPolicy());
+    private Future<?> queryTask;
+    private volatile ScopeClassIndex scopeIndex=new ScopeClassIndex(List.of(),Map.of());
+    private final Label globalScopeLabel=new Label("全局采集范围：正在计算…");
+    private final Label indexSummaryLabel=new Label("目标 JVM 索引：正在读取…");
+    private final Label packageSummaryLabel=new Label();
+    private ScopeSelection selection = new ScopeSelection(MonitoringConfig.Scope.defaults());
+    private volatile List<String> classNames = List.of();
+    private volatile Map<String, List<String>> methodIndex = Map.of();
+    private List<String> packageNames = List.of();
+    private List<String> filtered = List.of();
+    private String browsingPackage = "";
+    private final TreeView<String> packageTree = new TreeView<>(new TreeItem<>("全部包"));
+    private final TableView<ClassRow> classTable = new TableView<>();
+    private final TextField packageSearchField = new TextField();
+    private final TextField classSearchField = new TextField();
+    private final CheckBox onlySelected = new CheckBox("只看已纳入");
+    private final Label classSummaryLabel = new Label("正在建立类索引…");
+    private final Label locationLabel = new Label("当前浏览：全部已发现的类");
+    private final Label notice = new Label("勾选包包含子包；排除规则优先。修改会同步到高级配置。");
+    private final Button undoClear = new Button("撤销清空");
+    private MonitoringConfig.Scope clearedScope;
+    private final Label ruleSummary = new Label();
+    private final Label includedRuleLabel=new Label(), excludedPackageLabel=new Label(), packageStateLabel=new Label();
+    private final Button includePackage=new Button("纳入整包"),excludePackage=new Button("排除此包"),inheritPackage=new Button("恢复跟随父包");
+    private final Label pageLabel = new Label();
+    private final Button includePage=new Button("纳入本页"),excludePage=new Button("移出本页");
+    private final Label emptyClassLabel=label("没有匹配的类\n可浏览全部、清除搜索，或关闭“只看已纳入”。","hint-label");
+    private boolean queryPending=true;
+    private final Button previous = new Button("上一页"), next = new Button("下一页");
+    private final TextArea classRules = new TextArea(), methodRules = new TextArea();
+    private final TitledPane rulesPane = new TitledPane();
+    private final PauseTransition queryDelay = new PauseTransition(Duration.millis(160));
     private Consumer<Void> onConfigChanged;
     private Consumer<Boolean> onLoadingChanged;
     private Consumer<String> onProgressChanged;
     private Consumer<ActualEnhancementMetrics> onActualEnhancementResultChanged;
-    private boolean bulkUpdating = false;
-    private boolean treeUpdating = false;
-    private boolean loadingClasses = false;
-    private static final int CLASS_PAGE_SIZE = 200;
-    private int currentPage = 0;
-    private long includedSelectedClassCount;
-    /** Strong reference while a large YAML scope is reconciled over multiple JavaFX pulses. */
-    private Timeline configurationApplyTimeline;
-    /** Strong reference while a large package-tree model is committed over multiple JavaFX pulses. */
-    private Timeline packageTreeBuildTimeline;
+    private boolean loadingClasses, disposed, rendering, rulesDirty, syncingRules;
+    private long revision, queryRevision, loadRevision, treeRevision, indexRevision, browseRevision, renderedBrowseRevision;
+    private long renderedIndex = -1;
+    private String renderedPackageNeedle = null;
+    private javafx.animation.Timeline treeBuild;
+    private int page;
     private ActualEnhancementResult actualEnhancementResult;
-    /** Prevents a late reader from publishing a prior monitoring session's result. */
     private long actualEnhancementLoadGeneration;
 
     public ClassSelectionPane(String pid) {
-        this.pid = pid;
-        this.classIndexCache = new JvmClassIndexCache(pid);
-        getStyleClass().add("class-selection-pane");
-        excludedMethodPatterns.addAll(ClassSelectionRules.defaultExcludedMethodPatterns());
-
-        rootItem.setExpanded(false);
-        rootItem.setSelected(false);
-        packageTree = new TreeView<>(rootItem);
-        packageTree.setShowRoot(false);
-        packageTree.setCellFactory(tree -> new CheckBoxTreeCell<>() {
-            @Override
-            public void updateItem(String item, boolean empty) {
-                super.updateItem(item, empty);
-                getStyleClass().removeAll("package-tree-search-path", "package-tree-search-hit");
-                if (empty || item == null) return;
-                String needle = searchNeedle();
-                if (!needle.isEmpty()) {
-                    String path = treeItemPath(getTreeItem());
-                    if (searchPathSet.contains(path)) {
-                        getStyleClass().add("package-tree-search-path");
-                    }
-                    if (searchHitSet.contains(path)) {
-                        getStyleClass().add("package-tree-search-hit");
-                    }
-                }
+        this.pid = pid; cache = new JvmClassIndexCache(pid);
+        getStyleClass().addAll("class-selection-pane", "scope-editor"); setSpacing(10);
+        Button clear = button("清空范围", this::clearScope); clear.setId("scope-clear");
+        undoClear.setId("scope-undo-clear");undoClear.setMinWidth(Region.USE_PREF_SIZE);undoClear.setVisible(false);undoClear.managedProperty().bind(undoClear.visibleProperty());
+        undoClear.setOnAction(event -> {
+            if (clearedScope == null || rulesDirty) return;
+            selection = new ScopeSelection(clearedScope);changed();notice.setText("已恢复清空前的采集范围。");
+        });
+        Button viewRules = button("编辑排除规则", () -> rulesPane.setExpanded(!rulesPane.isExpanded()));
+        viewRules.setId("scope-edit-rules");
+        viewRules.textProperty().bind(javafx.beans.binding.Bindings.when(rulesPane.expandedProperty()).then("返回包与类").otherwise("编辑排除规则"));
+        HBox heading = new HBox(10, globalScopeLabel, spacer(), viewRules, clear); heading.setAlignment(Pos.CENTER_LEFT);
+        ruleSummary.getStyleClass().add("scope-rule-summary");ruleSummary.setId("scope-rule-summary");
+        includedRuleLabel.setId("scope-included-rules");excludedPackageLabel.setId("scope-excluded-packages");
+        for(Label row:List.of(includedRuleLabel,excludedPackageLabel)){
+            row.setMaxWidth(420);row.setTextOverrun(OverrunStyle.ELLIPSIS);row.getStyleClass().add("scope-rule-summary");
+            Tooltip complete=new Tooltip();complete.setWrapText(true);complete.setMaxWidth(600);complete.textProperty().bind(row.textProperty());row.setTooltip(complete);
+        }
+        packageSearchField.setPromptText("查找包名"); packageSearchField.setId("scope-package-search"); packageSearchField.getStyleClass().add("search-field");
+        classSearchField.setPromptText("搜索完整类名或简单类名"); classSearchField.setId("scope-class-search"); classSearchField.getStyleClass().add("search-field");
+        packageTree.setShowRoot(false); packageTree.setId("scope-package-tree"); packageTree.getStyleClass().add("package-tree");
+        packageTree.setCellFactory(tree -> packageCell());
+        packageTree.getSelectionModel().selectedItemProperty().addListener((obs, before, item) -> {
+            if (rendering || item == null) return;
+            browsingPackage = item.getValue();updatePackageActions(); scheduleQuery();
+        });
+        Button all = button("浏览全部", () -> { browsingPackage = ""; packageTree.getSelectionModel().clearSelection();updatePackageActions(); scheduleQuery(); });
+        all.setId("scope-browse-all");
+        indexSummaryLabel.getStyleClass().add("scope-index-summary");indexSummaryLabel.setId("scope-index-summary");indexSummaryLabel.setWrapText(true);
+        HBox packageHeader = new HBox(8,label("包目录", "section-header"),spacer(),all);packageHeader.setAlignment(Pos.CENTER_LEFT);
+        VBox packages = new VBox(8, packageHeader, new SearchBox(packageSearchField,"包名",false), packageTree,indexSummaryLabel);
+        packages.setMinWidth(190); packages.setPrefWidth(240); packages.setMaxWidth(280); packages.getStyleClass().add("scope-package-browser"); VBox.setVgrow(packageTree, Priority.ALWAYS);
+        onlySelected.setId("scope-only-selected"); onlySelected.setOnAction(event -> scheduleQuery());
+        includePage.setOnAction(e -> selectPage(true));includePage.getStyleClass().add("ghost-btn"); includePage.setId("scope-include-page");
+        excludePage.setOnAction(e -> selectPage(false));excludePage.getStyleClass().add("ghost-btn"); excludePage.setId("scope-exclude-page");
+        SearchBox classSearch = new SearchBox(classSearchField,"类名",true);
+        HBox filters = new HBox(8, classSearch, onlySelected); filters.setAlignment(Pos.CENTER_LEFT); HBox.setHgrow(classSearch, Priority.ALWAYS);
+        HBox actions = new HBox(8, includePage, excludePage, spacer(), previous, pageLabel, next); actions.setAlignment(Pos.CENTER_LEFT);
+        locationLabel.getStyleClass().add("scope-location");locationLabel.setId("scope-location");locationLabel.setMaxWidth(Double.MAX_VALUE);locationLabel.setTextOverrun(OverrunStyle.ELLIPSIS);
+        packageSummaryLabel.getStyleClass().add("scope-package-summary");packageSummaryLabel.setId("scope-package-summary");packageSummaryLabel.setWrapText(true);
+        includePackage.setId("scope-include-package");excludePackage.setId("scope-exclude-package");inheritPackage.setId("scope-inherit-package");
+        includePackage.setTooltip(new Tooltip("纳入当前包及子包；明确的子包排除会被恢复。"));
+        excludePackage.setTooltip(new Tooltip("排除当前包及子包，包括之后加载的新类；父包仍保持纳入。"));
+        inheritPackage.setTooltip(new Tooltip("移除当前包自己的纳入/排除规则；保留子包规则和独立类选择。"));
+        includePackage.setOnAction(e->editPackage("include"));excludePackage.setOnAction(e->editPackage("exclude"));inheritPackage.setOnAction(e->editPackage("inherit"));
+        packageStateLabel.setId("scope-package-state");packageStateLabel.setWrapText(true);
+        FlowPane packageActions=new FlowPane(8,6,includePackage,excludePackage,inheritPackage);updatePackageActions();
+        globalScopeLabel.getStyleClass().add("scope-global-summary");globalScopeLabel.setId("scope-global-summary");globalScopeLabel.setWrapText(true);
+        classSummaryLabel.setId("scope-filter-summary");classSummaryLabel.setWrapText(true);
+        buildClassTable();
+        VBox packageHeading=new VBox(8,locationLabel,packageActions);
+        FlowPane packageContext=new FlowPane(12,4,packageSummaryLabel,packageStateLabel);
+        VBox classes = new VBox(9,new VBox(5,packageHeading,packageContext), filters, classTable, actions, classSummaryLabel); classes.getStyleClass().add("scope-class-browser");
+        VBox.setVgrow(classTable, Priority.ALWAYS);
+        classes.setMinWidth(0);
+        SplitPane browsers = new SplitPane(packages, classes); browsers.setDividerPositions(.23); SplitPane.setResizableWithParent(packages,false); VBox.setVgrow(browsers, Priority.ALWAYS); browsers.setMinHeight(180);
+        notice.setWrapText(true); notice.getStyleClass().add("scope-notice"); notice.setId("scope-notice");
+        notice.setMinWidth(0);notice.setMaxWidth(Double.MAX_VALUE);HBox.setHgrow(notice,Priority.ALWAYS);
+        HBox feedback=new HBox(12,notice,undoClear);feedback.setAlignment(Pos.CENTER_LEFT);
+        buildRulesPane();
+        browsers.visibleProperty().bind(rulesPane.expandedProperty().not());browsers.managedProperty().bind(browsers.visibleProperty());
+        rulesPane.visibleProperty().bind(rulesPane.expandedProperty());rulesPane.managedProperty().bind(rulesPane.visibleProperty());
+        VBox.setVgrow(rulesPane, Priority.ALWAYS);
+        ruleSummary.getStyleClass().setAll("scope-count-summary");
+        FlowPane appliedRules=new FlowPane(16,4,ruleSummary,includedRuleLabel,excludedPackageLabel);
+        getChildren().addAll(heading,appliedRules, browsers, feedback, rulesPane);
+        previous.setId("scope-previous-page"); next.setId("scope-next-page");
+        previous.setOnAction(e -> { if (page > 0) { page--; renderPage(); } });
+        next.setOnAction(e -> { if ((page + 1) * PAGE_SIZE < filtered.size()) { page++; renderPage(); } });
+        queryDelay.setOnFinished(e -> query());
+        packageSearchField.textProperty().addListener((obs, a, b) -> scheduleQuery());
+        classSearchField.textProperty().addListener((obs, a, b) -> scheduleQuery());
+        updateRuleSummary(); loadClasses(false);
+    }
+    private TreeCell<String> packageCell() {
+        return new TreeCell<>() {
+            private final CheckBox check = new CheckBox(); private final Label name = new Label();
+            private final HBox content = new HBox(7, check, name);
+            { content.setAlignment(Pos.CENTER_LEFT); check.setOnAction(e -> {
+                String path = getItem(); if (path == null || rendering || rulesDirty) return;
+                ScopeSelection.Change result = selection.selectPackage(path, check.isSelected());
+                notice.setText(result == ScopeSelection.Change.EXCLUDED_BY_RULE
+                        ? "这个包仍被上级排除规则覆盖。请在下方规则中调整排除条件。" : "范围已更新。包规则也适用于之后加载的新类。");
+                changed();
+            }); }
+            @Override protected void updateItem(String path, boolean empty) {
+                super.updateItem(path, empty); setText(null);
+                if (empty || path == null) { setGraphic(null); return; }
+                String parent = getTreeItem().getParent() == null ? "" : getTreeItem().getParent().getValue();
+                name.setText(parent.isBlank() || !path.startsWith(parent + ".") ? path : path.substring(parent.length() + 1));
+                check.setDisable(rulesDirty);
+                check.setSelected(selection.packageIncluded(path)); check.setIndeterminate(selection.packagePartial(path));
+                check.setAccessibleText("采集包 " + path + " 及子包");
+                setTooltip(new Tooltip(path + "\n点击文字浏览；复选框编辑采集规则。")); setGraphic(content);
+            }
+        };
+    }
+    private void buildClassTable() {
+        classTable.setEditable(true); classTable.setId("scope-class-table"); classTable.getStyleClass().add("class-table");
+        classTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        TableColumn<ClassRow, Boolean> included = new TableColumn<>("采集");
+        included.editableProperty().bind(rulesPane.textProperty().isEqualTo("排除规则 · 排除优先于纳入"));
+        included.setCellValueFactory(c -> c.getValue().included); included.setCellFactory(CheckBoxTableCell.forTableColumn(included)); included.setMinWidth(52);included.setMaxWidth(52); included.setPrefWidth(52);
+        TableColumn<ClassRow, String> name = new TableColumn<>("类"); name.setCellValueFactory(c -> new SimpleStringProperty(simple(c.getValue().name))); name.setMinWidth(150);name.setPrefWidth(200);
+        name.setCellFactory(c -> new TableCell<>() { @Override protected void updateItem(String text, boolean empty) {
+            super.updateItem(text, empty); setText(empty ? null : text);
+            setTooltip(empty || getTableRow().getItem() == null ? null : new Tooltip(getTableRow().getItem().name));
+        }});
+        TableColumn<ClassRow, String> state = new TableColumn<>("生效原因"); state.setCellValueFactory(c -> new SimpleStringProperty(c.getValue().reason)); state.setMinWidth(120);state.setPrefWidth(160);
+        TableColumn<ClassRow, Number> methods = new TableColumn<>("方法"); methods.setCellValueFactory(c -> new SimpleIntegerProperty(methodIndex.getOrDefault(c.getValue().name, List.of()).size())); methods.setMinWidth(56);methods.setPrefWidth(60);methods.setMaxWidth(66);
+        classTable.getColumns().addAll(included, name, state, methods);
+        emptyClassLabel.setWrapText(true);classTable.setPlaceholder(emptyClassLabel);
+    }
+    private void buildRulesPane() {
+        classRules.setPromptText("每行一个，例如 cls:*DTO 或 pkg:com.example.internal"); classRules.setPrefRowCount(3); classRules.setId("scope-class-rules");
+        methodRules.setPromptText("每行一个，例如 get* 或 com.example.Service.find*"); methodRules.setPrefRowCount(2); methodRules.setId("scope-method-rules");
+        classRules.textProperty().addListener((obs,a,b) -> ruleDraftChanged());
+        methodRules.textProperty().addListener((obs,a,b) -> ruleDraftChanged());
+        Button restore = button("还原未应用修改", () -> { rulesDirty = false; setQueryPending(queryPending); updateRuleSummary(); packageTree.refresh(); renderPage(); if (onConfigChanged != null) onConfigChanged.accept(null); });
+        Button apply = button("应用排除规则", () -> {
+            try {
+                List<String> excluded = classRules.getText().lines().map(ClassSelectionRules::normalizeClassExcludeCondition).filter(s -> !s.isBlank()).distinct().toList();
+                List<String> methods = methodRules.getText().lines().map(String::trim).filter(s -> !s.isBlank() && !s.startsWith("#")).distinct().toList();
+                selection.replaceRules(excluded, methods); rulesDirty = false; notice.setText("排除规则已应用。命中排除规则的类不会被采集。"); changed();
+            } catch (IllegalArgumentException error) { notice.setText(error.getMessage()); }
+        }); apply.setId("scope-apply-rules"); apply.getStyleClass().add("primary-btn");
+        Button defaults = button("填入常用规则", () -> { classRules.setText(String.join("\n", MonitoringConfig.Scope.DEFAULT_EXCLUDE_CONDITIONS)); methodRules.setText(String.join("\n", MonitoringConfig.Scope.DEFAULT_EXCLUDE_METHODS)); });
+        VBox content = new VBox(8, label("排除类或包", "section-header"), classRules, label("排除方法", "section-header"), methodRules, new FlowPane(8,8,apply,restore,defaults));
+        content.setPadding(new Insets(10)); rulesPane.setText("排除规则 · 排除优先于纳入"); rulesPane.setContent(content); rulesPane.setAnimated(false);rulesPane.setExpanded(false);
+    }
+    private void ruleDraftChanged() {
+        if (syncingRules || disposed) return;
+        invalidateClearUndo();
+        rulesDirty = true;setQueryPending(queryPending);
+        packageTree.refresh(); rulesPane.setText("排除规则 · 有未应用修改");
+        notice.setText("规则编辑尚未应用。当前 YAML 保持已应用规则，请先应用或还原修改后开始采集。");
+        if (onConfigChanged != null) onConfigChanged.accept(null);
+    }
+    public boolean hasPendingRuleEdits() { return rulesDirty; }
+    private void loadClasses(boolean force) {
+        if (disposed || loadingClasses) return;
+        long generation = ++loadRevision; setLoading(true); classSummaryLabel.setText(force ? "正在重新扫描…已有规则将保留" : "正在读取目标 JVM 的类索引…");
+        worker.submit(() -> {
+            try {
+                List<String> classes = force ? List.of() : cache.readClasses();
+                Map<String, List<String>> methods = force ? Map.of() : cache.readMethods();
+                if (classes.isEmpty()) { classes = JvmService.listLoadedClasses(pid); cache.writeClasses(classes); }
+                if (methods.isEmpty()) { methods = JvmService.listClassMethods(pid); cache.writeMethods(methods); }
+                List<String> names = classes.stream().distinct().sorted().toList(); Map<String, List<String>> index = Map.copyOf(methods);
+                ScopeClassIndex prepared=new ScopeClassIndex(names,index); List<String> packages=prepared.packages();
+                Platform.runLater(() -> {
+                    if (disposed || generation != loadRevision) return;
+                    classNames = names; methodIndex = index; packageNames = packages; scopeIndex=prepared; indexRevision++;
+                    indexSummaryLabel.setText("目标 JVM 索引："+count(names.size())+" 类");
+                    setLoading(false); query();
+                });
+            } catch (Exception error) {
+                AppLog.error("类索引加载失败", error);
+                Platform.runLater(() -> { if (!disposed && generation == loadRevision) { setLoading(false); notice.setText("类索引读取失败，可点击刷新重试。已有规则仍保留。"); } });
             }
         });
-        packageTree.getStyleClass().add("package-tree");
-        packageTree.setMinWidth(220);
-        packageTree.setPrefWidth(300);
-
-        VBox left = buildScopePanel();
-        VBox right = new VBox(10, buildClassHeader(), classTable);
-        right.getStyleClass().add("class-list-panel");
-        VBox.setVgrow(classTable, Priority.ALWAYS);
-
-        buildClassTable();
-        getItems().addAll(left, right);
-        setDividerPositions(0.30);
-        loadClasses(false);
     }
-
-    public void setOnConfigChanged(Consumer<Void> onConfigChanged) {
-        this.onConfigChanged = onConfigChanged;
+    public void reloadClasses() { loadClasses(true); }
+    private void setLoading(boolean value) { loadingClasses = value; if (onLoadingChanged != null) onLoadingChanged.accept(value); }
+    public boolean isLoadingClasses() { return loadingClasses; }
+    private void scheduleQuery() { browseRevision++; classTable.getItems().clear();scheduleRuleQuery(); }
+    private void scheduleRuleQuery() {
+        if (disposed) return;
+        setQueryPending(true);
+        queryRevision++; if(queryTask!=null)queryTask.cancel(true);
+        locationLabel.setText(browsingPackage.isEmpty() ? "当前浏览：全部已发现的类" : "当前包："+browsingPackage+"（含子包）");
+        locationLabel.setTooltip(new Tooltip(locationLabel.getText()));
+        packageSummaryLabel.setText("当前范围统计：计算中…");
+        classSummaryLabel.setText("正在筛选当前列表…");queryDelay.playFromStart();
     }
-
-    public void setOnLoadingChanged(Consumer<Boolean> onLoadingChanged) {
-        this.onLoadingChanged = onLoadingChanged;
-    }
-
-    public void setOnProgressChanged(Consumer<String> onProgressChanged) {
-        this.onProgressChanged = onProgressChanged;
-    }
-
-    public void setOnActualEnhancementResultChanged(
-            Consumer<ActualEnhancementMetrics> onActualEnhancementResultChanged) {
-        this.onActualEnhancementResultChanged = onActualEnhancementResultChanged;
-    }
-
-    private VBox buildScopePanel() {
-        packageSearchField.setPromptText("搜索包名，自动展开匹配项");
-        packageSearchField.getStyleClass().add("search-field");
-        packageSearchField.textProperty().addListener((obs, old, now) -> {
-            if (!treeUpdating) buildPackageTree();
+    private void query() {
+        if (disposed) return;
+        setQueryPending(true);
+        if(queryTask!=null)queryTask.cancel(true);
+        long generation = ++queryRevision, scopeRevision = revision;
+        String packageNeedle = packageSearchField.getText().trim().toLowerCase(Locale.ROOT), needle = classSearchField.getText().trim();
+        long indexVersion = indexRevision, browsingVersion = browseRevision;
+        boolean needsTree = !packageNeedle.equals(renderedPackageNeedle) || indexVersion != renderedIndex;
+        String browsed = browsingPackage; boolean selectedOnly = onlySelected.isSelected();
+        var rules=selection.scope();var index=scopeIndex;List<String> packages=packageNames;
+        queryTask=queryWorker.submit(() -> {
+            try {
+                var chosen=index.select(rules,() -> !Thread.currentThread().isInterrupted());
+                var result=index.query(chosen,browsed,needle,selectedOnly,() -> !Thread.currentThread().isInterrupted());
+                List<String> tree = needsTree ? packages.stream().filter(n -> packageNeedle.isEmpty() || n.toLowerCase(Locale.ROOT).contains(packageNeedle)).toList() : List.of();
+                List<PackageSegment> segments = needsTree ? packageSegments(tree) : List.of();
+                Platform.runLater(() -> {
+                    if (disposed || generation != queryRevision || scopeRevision != revision || indexVersion != indexRevision) return;
+                    filtered = result.matches();setQueryPending(false);
+                    if (browsingVersion != renderedBrowseRevision) { page = 0; renderedBrowseRevision = browsingVersion; }
+                    renderPage();
+                    if (needsTree) { renderedPackageNeedle = packageNeedle; renderedIndex = indexVersion; rebuildPackageTree(segments); }
+                    globalScopeLabel.setText("全局待采集："+count(chosen.classCount())+" 类 · 规则匹配数，非实际增强数");
+                    packageSummaryLabel.setText((browsed.isEmpty() ? "全部索引：" : "本包范围：")+count(result.packageClassCount())+" 类 · 其中纳入采集 "+count(result.packageSelectedCount())+" 类");
+                    classSummaryLabel.setText("当前列表："+count(result.matches().size())+" 类 · 其中纳入采集 "+count(result.matchedSelectedCount())+" 类"
+                            +(needle.isEmpty() ? "" : " · 搜索："+needle));
+                });
+            } catch(CancellationException ignored) { /* A newer query owns publication. */ }
         });
-        packageSummaryLabel.getStyleClass().add("tree-summary-label");
-
-        VBox treeWrap = new VBox(6, packageSummaryLabel, packageTree);
-        treeWrap.getStyleClass().add("tree-wrap");
-        VBox.setVgrow(packageTree, Priority.ALWAYS);
-        VBox.setVgrow(treeWrap, Priority.ALWAYS);
-
-        VBox left = new VBox(10,
-                section("业务包"),
-                packageSearchField,
-                treeWrap);
-        left.getStyleClass().add("package-panel");
-        return left;
     }
-
-    private Label section(String text) {
-        return label(text, "section-header");
+    private void setQueryPending(boolean value) {
+        queryPending=value;classTable.setDisable(value);
+        includePage.setDisable(value || rulesDirty);excludePage.setDisable(value || rulesDirty);
+        if(value){previous.setDisable(true);next.setDisable(true);}
+        emptyClassLabel.setText(value ? "正在更新当前包和列表…" : "没有匹配的类\n可浏览全部、清除搜索，或关闭“只看已纳入”。");
     }
-
-    private Label label(String text, String styleClass) {
-        Label label = new Label(text);
-        label.getStyleClass().add(styleClass);
-        return label;
-    }
-
-    private String treeItemPath(javafx.scene.control.TreeItem<String> item) {
-        if (item == null || item == rootItem) return "";
-        List<String> parts = new ArrayList<>();
-        javafx.scene.control.TreeItem<String> cursor = item;
-        while (cursor != null && cursor != rootItem) {
-            parts.add(0, cursor.getValue());
-            cursor = cursor.getParent();
+    private static String count(long value){return String.format(Locale.ROOT,"%,d",value);}
+    private record PackageSegment(String path, String parent) { }
+    private static List<PackageSegment> packageSegments(List<String> packages) {
+        Map<String,PackageSegment> segments = new LinkedHashMap<>();
+        for (String pkg : packages) {
+            String current = "";
+            for (String part : pkg.split("\\.")) {
+                String parent = current; current = current.isEmpty() ? part : current + "." + part;
+                segments.putIfAbsent(current,new PackageSegment(current,parent));
+            }
         }
-        return String.join(".", parts);
+        return List.copyOf(segments.values());
     }
-
-    private VBox buildClassHeader() {
-        Label title = new Label("监控范围");
-        title.getStyleClass().add("card-title");
-        Label subtitle = new Label("勾选要监控的类；取消勾选即可排除。");
-        subtitle.getStyleClass().add("hint-label");
-        classSearchField.setPromptText("搜索类名 / 包名");
-        classSearchField.getStyleClass().add("search-field");
-        classSearchField.textProperty().addListener((obs, old, now) -> refreshVisibleRows());
-
-        Button selectAll = new Button("包含本页");
-        selectAll.getStyleClass().add("ghost-btn");
-        selectAll.setOnAction(e -> setVisibleRowsIncluded(true));
-
-        Button invert = new Button("反选本页");
-        invert.getStyleClass().add("ghost-btn");
-        invert.setOnAction(e -> invertVisibleRowsIncluded());
-
-        Button classExclude = new Button("排除类");
-        classExclude.getStyleClass().add("ghost-btn");
-        classExclude.setOnAction(e -> showClassExcludeDialog());
-
-        Button methodExclude = new Button("排除方法");
-        methodExclude.getStyleClass().add("ghost-btn");
-        methodExclude.setOnAction(e -> showMethodExcludeDialog());
-
-        Region spacer = new Region();
-        HBox.setHgrow(spacer, Priority.ALWAYS);
-        classSearchField.setMaxWidth(Double.MAX_VALUE);
-        FlowPane tools = new FlowPane(6, 6, classExclude, methodExclude, selectAll, invert);
-        tools.setAlignment(Pos.CENTER_LEFT);
-        tools.setPrefWrapLength(420);
-        classExclude.setTooltip(new Tooltip("按类名、注解或类型配置排除规则"));
-        methodExclude.setTooltip(new Tooltip("配置需要跳过的方法名称与匹配规则"));
-        previousPageButton.getStyleClass().add("class-page-btn");
-        nextPageButton.getStyleClass().add("class-page-btn");
-        previousPageButton.setOnAction(e -> changePage(-1));
-        nextPageButton.setOnAction(e -> changePage(1));
-        pageLabel.getStyleClass().add("class-page-label");
-        HBox pageControls = new HBox(6, previousPageButton, pageLabel, nextPageButton);
-        pageControls.setAlignment(Pos.CENTER_RIGHT);
-        loadingLockedControls.addAll(List.of(classSearchField, classExclude, methodExclude, selectAll, invert,
-                previousPageButton, nextPageButton));
-
-        classSummaryLabel.getStyleClass().add("hint-label");
-        Region footerSpacer = new Region();
-        HBox.setHgrow(footerSpacer, Priority.ALWAYS);
-        HBox footer = new HBox(8, classSummaryLabel, footerSpacer, pageControls);
-        footer.setAlignment(Pos.CENTER_LEFT);
-        return new VBox(8, title, subtitle, classSearchField, tools, footer);
+    private void rebuildPackageTree(List<PackageSegment> segments) {
+        if (treeBuild != null) treeBuild.stop();
+        long generation = ++treeRevision;
+        Set<String> expanded = new HashSet<>(); collectExpanded(packageTree.getRoot(), expanded);
+        TreeItem<String> root = new TreeItem<>(""); root.setExpanded(true);
+        Map<String, TreeItem<String>> nodes = new LinkedHashMap<>(); nodes.put("", root);
+        int[] offset = {0};
+        Runnable append = () -> {
+            if (disposed || generation != treeRevision) { if (treeBuild != null) treeBuild.stop(); return; }
+            int end = Math.min(segments.size(), offset[0] + 256);
+            for (; offset[0] < end; offset[0]++) {
+                PackageSegment segment = segments.get(offset[0]); TreeItem<String> item = new TreeItem<>(segment.path());
+                nodes.put(segment.path(),item); nodes.get(segment.parent()).getChildren().add(item);
+                item.setExpanded(expanded.contains(segment.path()) || !packageSearchField.getText().isBlank() || segment.path().split("\\.").length <= 2);
+            }
+            if (offset[0] == segments.size()) {
+                if (treeBuild != null) treeBuild.stop(); rendering = true; packageTree.setRoot(root);
+                if (nodes.containsKey(browsingPackage)) packageTree.getSelectionModel().select(nodes.get(browsingPackage));
+                rendering = false;
+            }
+        };
+        if (segments.size() <= 256) append.run();
+        else {
+            treeBuild = new javafx.animation.Timeline(new javafx.animation.KeyFrame(Duration.millis(16), event -> append.run()));
+            treeBuild.setCycleCount(javafx.animation.Timeline.INDEFINITE); treeBuild.play();
+        }
     }
-
+    private void collectExpanded(TreeItem<String> root, Set<String> expanded) {
+        if (root == null) return;
+        ArrayDeque<TreeItem<String>> pending = new ArrayDeque<>(); pending.add(root);
+        while (!pending.isEmpty()) { var node = pending.removeFirst(); if (node.isExpanded()) expanded.add(node.getValue()); pending.addAll(node.getChildren()); }
+    }
+    private void renderPage() {
+        rendering = true;
+        page = Math.max(0, Math.min(page, Math.max(1,(filtered.size()+PAGE_SIZE-1)/PAGE_SIZE)-1));
+        int start = Math.min(page * PAGE_SIZE, filtered.size()), end = Math.min(start + PAGE_SIZE, filtered.size());
+        List<ClassRow> rows = new ArrayList<>();
+        Set<String> exactClasses=new HashSet<>(selection.scope().includeClasses());
+        for (String name : filtered.subList(start, end)) {
+            String excluded = selection.exclusion(name);
+            String reason = !excluded.isEmpty() ? "排除 · " + excluded : selection.selected(name)
+                    ? (exactClasses.contains(name) ? "独立纳入" : "随包纳入") : "未纳入";
+            ClassRow row = new ClassRow(name, selection.selected(name), reason);
+            row.included.addListener((obs, before, after) -> {
+                if (rendering) return;
+                if(queryPending){renderPage();return;}
+                if (rulesDirty) { renderPage(); notice.setText("请先应用或还原规则草稿，再编辑采集勾选。"); return; }
+                ScopeSelection.Change result = selection.selectClass(row.name, after);
+                notice.setText(result == ScopeSelection.Change.EXCLUDED_BY_RULE
+                        ? "该类命中排除规则：" + selection.exclusion(row.name) + "。请先调整下方排除规则。"
+                        : "范围已更新。独立选择的类不会因浏览其他包而丢失。");
+                changed();
+            }); rows.add(row);
+        }
+        classTable.getItems().setAll(rows); pageLabel.setText(filtered.isEmpty() ? "0 / 0" : (page + 1) + " / " + ((filtered.size() + PAGE_SIZE - 1) / PAGE_SIZE));
+        previous.setDisable(queryPending || page == 0); next.setDisable(queryPending || end >= filtered.size()); rendering = false;
+    }
+    private void selectPage(boolean include) {
+        if(queryPending){notice.setText("当前列表正在更新，请稍后选择本页。");return;}
+        if (rulesDirty) { notice.setText("请先应用或还原规则草稿，再编辑本页采集范围。"); return; }
+        boolean blocked = false;
+        for (ClassRow row : List.copyOf(classTable.getItems())) blocked |= selection.selectClass(row.name, include) == ScopeSelection.Change.EXCLUDED_BY_RULE;
+        notice.setText(blocked ? "本页部分类型命中排除规则，保持排除。可在下方规则中调整。" : "当前页的采集范围已更新；其他页不受影响。"); changed();
+    }
+    private void changed() {
+        invalidateClearUndo();
+        globalScopeLabel.setText("全局待采集：正在计算…");
+        revision++; updateRuleSummary(); packageTree.refresh(); renderPage(); scheduleRuleQuery();
+        if (onConfigChanged != null) onConfigChanged.accept(null);
+    }
+    private void clearScope() {
+        if (rulesDirty) { notice.setText("请先应用或还原规则草稿。"); return; }
+        var before=selection.scope();
+        if(before.includePackages().isEmpty()&&before.includeClasses().isEmpty())return;
+        selection.clearIncludes();changed();clearedScope=before;undoClear.setVisible(true);
+        notice.setText("采集范围已清空。可撤销；继续编辑范围后将保留新的选择。");
+    }
+    private void invalidateClearUndo(){clearedScope=null;undoClear.setVisible(false);}
+    private void editPackage(String action) {
+        if(browsingPackage.isBlank()||rulesDirty)return;
+        if(action.equals("exclude")){selection.excludePackage(browsingPackage);notice.setText("已排除 "+browsingPackage+" 及子包，其他纳入范围保持不变。");}
+        else if(action.equals("inherit")){selection.inheritPackage(browsingPackage);notice.setText("已移除当前包的单独规则，跟随父包；子包规则和独立类保持不变。");}
+        else {var result=selection.selectPackage(browsingPackage,true);notice.setText(result==ScopeSelection.Change.EXCLUDED_BY_RULE?"该包仍受上级排除规则限制，请先恢复上级包。":"已纳入 "+browsingPackage+" 及子包。");}
+        changed();
+    }
+    private void updatePackageActions() {
+        boolean blocked=browsingPackage.isBlank()||rulesDirty;
+        for(Button action:List.of(includePackage,excludePackage,inheritPackage))action.setDisable(blocked);
+        for(Button action:List.of(includePackage,excludePackage,inheritPackage)){action.setVisible(!browsingPackage.isBlank());action.setManaged(!browsingPackage.isBlank());}
+        if(browsingPackage.isBlank()){packageStateLabel.setText("选择左侧包目录可设置整包规则");return;}
+        String excluded=selection.packageExclusion(browsingPackage);
+        packageStateLabel.setText(!excluded.isEmpty()?"当前包已排除 · "+excluded:selection.packageIncluded(browsingPackage)?(selection.packagePartial(browsingPackage)?"当前包已纳入 · 部分子包被排除":"当前包已纳入（含子包）"):"当前包未整包纳入 · 可单独选择类");
+    }
+    private void updateRuleSummary() {
+        var scope = selection.scope();
+        updatePackageActions();
+        includedRuleLabel.setText(scope.includePackages().isEmpty()?"纳入包：无（可勾选包，或单独纳入类）":"纳入包："+String.join("、",scope.includePackages()));
+        var excludedPackages=scope.excludeConditions().stream().filter(v->v.startsWith("pkg:")).map(v->v.substring(4)).toList();
+        excludedPackageLabel.setText(excludedPackages.isEmpty()?"排除子包：无":"排除子包："+String.join("、",excludedPackages));
+        excludedPackageLabel.setVisible(!excludedPackages.isEmpty());excludedPackageLabel.setManaged(!excludedPackages.isEmpty());
+        ruleSummary.setText(scope.includePackages().isEmpty() && scope.includeClasses().isEmpty() ? "尚未选择采集范围"
+                : scope.includePackages().size() + " 条包规则  +  " + scope.includeClasses().size() + " 个独立类  ·  " + scope.excludeConditions().size() + " 条排除规则");
+        ruleSummary.setTooltip(new Tooltip("纳入包：" + String.join(", ", scope.includePackages()) + "\n独立类：" + String.join(", ", scope.includeClasses())));
+        if (!rulesDirty) {
+            syncingRules = true;
+            classRules.setText(String.join("\n", scope.excludeConditions())); methodRules.setText(String.join("\n", scope.excludeMethods()));
+            syncingRules = false; rulesPane.setText("排除规则 · 排除优先于纳入");
+        }
+    }
+    public List<String> getIncludedPackages() { return selection.scope().includePackages(); }
+    public List<String> getIncludedClasses() { return selection.scope().includeClasses(); }
+    public List<String> getExcludedClassConditionList() { return selection.scope().excludeConditions(); }
+    public List<String> getExcludedMethods() { return selection.scope().excludeMethods(); }
+    public List<String> getExcludedClasses() { ScopeSelection snapshot = selection.copy(); return classNames.stream().filter(n -> !snapshot.exclusion(n).isEmpty()).toList(); }
+    public String getPackagePrefixes() { return String.join("|", getIncludedPackages()); }
+    public String getExcludedClassConditions() { return String.join("|", getExcludedClassConditionList()); }
+    public void applyConfiguration(List<String> p, List<String> c, List<String> e, List<String> m) {
+        invalidateClearUndo();
+        if (disposed) return; rulesDirty = false; selection = new ScopeSelection(new MonitoringConfig.Scope(p, c, e, m)); revision++; globalScopeLabel.setText("全局待采集：正在计算…");updateRuleSummary(); query();
+    }
+    public void applyConfigurationAsync(List<String> p, List<String> c, List<String> e, List<String> m, Runnable complete) {
+        applyConfiguration(p, c, e, m); long expected = revision;
+        if (complete != null) Platform.runLater(() -> { if (!disposed && expected == revision) complete.run(); });
+    }
+    public SelectionMetrics getSelectionMetrics() { return metrics(scopeIndex,selection.scope()); }
+    public void getSelectionMetricsAsync(Consumer<SelectionMetrics> callback) {
+        if (disposed) return;
+        var rules=selection.scope();var index=scopeIndex;long version=revision,indexVersion=indexRevision;
+        worker.submit(() -> { SelectionMetrics result=metrics(index,rules);Platform.runLater(() -> {
+            if(!disposed && version==revision && indexVersion==indexRevision && callback!=null)callback.accept(result);
+        }); });
+    }
+    public SelectionMetrics metricsForConfiguration(List<String> p,List<String> c,List<String> e,List<String> m) {
+        return metrics(scopeIndex,new MonitoringConfig.Scope(p,c,e,m));
+    }
+    private static SelectionMetrics metrics(ScopeClassIndex index,MonitoringConfig.Scope rules) {
+        var selected=index.select(rules);return new SelectionMetrics(selected.classCount(),selected.methodCount());
+    }
+    public record SelectionMetrics(long enhancedClasses, long enhancedMethods) { }
+    public static final class ClassRow {
+        private final String name, reason; private final BooleanProperty included;
+        ClassRow(String name, boolean selected, String reason) { this.name = name; this.reason = reason; included = new SimpleBooleanProperty(selected); }
+        public String getClassName() { return name; } public boolean isIncluded() { return included.get(); } public BooleanProperty includedProperty() { return included; }
+    }
+    private static String simple(String name) { int dot = name.lastIndexOf('.'); return dot < 0 ? name : name.substring(dot + 1); }
+    private static Label label(String text, String css) { Label label = new Label(text); label.getStyleClass().add(css); return label; }
+    private static Region spacer() { Region spacer = new Region(); HBox.setHgrow(spacer, Priority.ALWAYS); return spacer; }
+    private static Button button(String text, Runnable action) { Button button = new Button(text); button.getStyleClass().add("ghost-btn"); button.setOnAction(e -> action.run()); return button; }
+    public void setOnConfigChanged(Consumer<Void> callback) { onConfigChanged = callback; }
+    public void setOnLoadingChanged(Consumer<Boolean> callback) { onLoadingChanged = callback; }
+    public void setOnProgressChanged(Consumer<String> callback) { onProgressChanged = callback; }
+    public void setOnActualEnhancementResultChanged(Consumer<ActualEnhancementMetrics> callback) { onActualEnhancementResultChanged = callback; }
+    public void dispose() { disposed = true; actualEnhancementLoadGeneration++; queryRevision++; loadRevision++; queryDelay.stop(); if (treeBuild != null) treeBuild.stop(); worker.shutdownNow(); queryWorker.shutdownNow(); }
     /** Loads the Agent's completed attach-time result without blocking the JavaFX event thread. */
     public void loadActualEnhancementResult(Path resultFile) {
         long generation = ++actualEnhancementLoadGeneration;
@@ -291,7 +481,7 @@ public class ClassSelectionPane extends SplitPane {
             }
             ActualEnhancementResult loadedResult = result;
             Platform.runLater(() -> {
-                if (generation != actualEnhancementLoadGeneration) return;
+                if (disposed || generation != actualEnhancementLoadGeneration) return;
                 actualEnhancementResult = loadedResult;
                 if (onActualEnhancementResultChanged != null) {
                     onActualEnhancementResultChanged.accept(new ActualEnhancementMetrics(
@@ -379,1282 +569,6 @@ public class ClassSelectionPane extends SplitPane {
         dialog.show();
     }
 
-    @SuppressWarnings("unchecked")
-    private void buildClassTable() {
-        classTable.getStyleClass().add("class-table");
-        classTable.setEditable(true);
-        Label emptyTitle = label("暂无匹配的类", "empty-state-title");
-        Label emptyHint = label("选择左侧业务包，或调整搜索条件。", "hint-label");
-        emptyHint.setWrapText(true);
-        VBox empty = new VBox(8, emptyTitle, emptyHint);
-        empty.setAlignment(Pos.CENTER);
-        classTable.setPlaceholder(empty);
-        classTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
-
-        TableColumn<ClassRow, Boolean> includedCol = new TableColumn<>("");
-        includedCol.setCellValueFactory(cell -> cell.getValue().includedProperty());
-        includedCol.setCellFactory(CheckBoxTableCell.forTableColumn(includedCol));
-        includedCol.setEditable(true);
-        includedCol.setPrefWidth(48);
-        includedCol.setMaxWidth(56);
-
-        TableColumn<ClassRow, String> nameCol = new TableColumn<>("类名");
-        nameCol.setCellValueFactory(new PropertyValueFactory<>("simpleName"));
-        nameCol.setCellFactory(col -> new TableCell<>() {
-            @Override
-            protected void updateItem(String item, boolean empty) {
-                super.updateItem(item, empty);
-                setText(empty ? null : item);
-                getStyleClass().remove("class-name-cell");
-                if (!empty) getStyleClass().add("class-name-cell");
-            }
-        });
-        nameCol.setPrefWidth(210);
-
-        TableColumn<ClassRow, String> pkgCol = new TableColumn<>("包名");
-        pkgCol.setCellValueFactory(new PropertyValueFactory<>("packageName"));
-        pkgCol.setPrefWidth(280);
-
-        TableColumn<ClassRow, String> typeCol = new TableColumn<>("类型");
-        typeCol.setCellValueFactory(new PropertyValueFactory<>("type"));
-        typeCol.setPrefWidth(110);
-
-        TableColumn<ClassRow, Integer> methodCountCol = new TableColumn<>("方法数");
-        methodCountCol.setCellValueFactory(new PropertyValueFactory<>("methodCount"));
-        methodCountCol.setPrefWidth(78);
-
-        classTable.getColumns().addAll(includedCol, nameCol, pkgCol, typeCol, methodCountCol);
-    }
-
-    private void loadClasses(boolean forceRefresh) {
-        setLoadingClasses(true);
-        classSummaryLabel.setText(forceRefresh ? "正在重新扫描目标 JVM..." : "正在读取目标 JVM 已加载类...");
-        packageSummaryLabel.setText("包选择（扫描中...）");
-        rootItem.getChildren().clear();
-        allRows.clear();
-        visibleRows.clear();
-        filteredRows.clear();
-        packageToRows.clear();
-        packageToDescendantRows.clear();
-        allPackages.clear();
-        selectedPackageSet.clear();
-        selectedRows.clear();
-        new Thread(() -> {
-            try {
-                AppLog.info("[ClassSelectionPane] load classes started pid=" + pid + " forceRefresh=" + forceRefresh);
-                List<String> classes = forceRefresh ? List.of() : classIndexCache.readClasses();
-                Map<String, List<String>> methods = forceRefresh ? Map.of() : classIndexCache.readMethods();
-                if (classes.isEmpty()) {
-                    classes = JvmService.listLoadedClasses(pid);
-                    classIndexCache.writeClasses(classes);
-                }
-                if (methods.isEmpty()) {
-                    methods = JvmService.listClassMethods(pid);
-                    classIndexCache.writeMethods(methods);
-                }
-                List<String> finalClasses = classes;
-                Map<String, List<String>> finalMethods = methods;
-                AppLog.info("[ClassSelectionPane] load classes finished pid=" + pid + " count=" + finalClasses.size());
-                Platform.runLater(() -> applyClasses(finalClasses, finalMethods));
-            } catch (Exception e) {
-                AppLog.error("[ClassSelectionPane] load classes failed pid=" + pid, e);
-                Platform.runLater(() -> {
-                    classSummaryLabel.setText("读取 JVM 类失败，请查看日志: " + AppLog.file().toAbsolutePath());
-                    packageSummaryLabel.setText("包选择（读取失败）");
-                    setLoadingClasses(false);
-                });
-            }
-        }, "load-jvm-classes").start();
-    }
-
-    /** Rebuilds the target JVM's class index; the controller displays a blocking progress overlay. */
-    public void reloadClasses() {
-        if (loadingClasses) return;
-        loadClasses(true);
-    }
-
-    private void applyClasses(List<String> classes, Map<String, List<String>> methods) {
-        List<ClassRow> rows = classes.stream()
-                .distinct()
-                .sorted()
-                .map(className -> new ClassRow(className, methods.getOrDefault(className, List.of())))
-                .collect(Collectors.toCollection(ArrayList::new));
-        rows.forEach(row -> row.includedProperty().addListener((obs, old, now) -> {
-            if (!bulkUpdating) {
-                if (selectedRows.contains(row)) {
-                    includedSelectedClassCount += now ? 1 : -1;
-                    if (appliedIncludeClasses.contains(row.getClassName()) && !isRowUnderIncludedPackage(row)) {
-                        if (!now) {
-                            appliedIncludeClasses = appliedIncludeClasses.stream()
-                                    .filter(className -> !className.equals(row.getClassName()))
-                                    .toList();
-                        }
-                        explicitExcludedClassNames.remove(row.getClassName());
-                    } else if (now) {
-                        explicitExcludedClassNames.remove(row.getClassName());
-                    } else {
-                        explicitExcludedClassNames.add(row.getClassName());
-                    }
-                }
-                refreshSummary();
-                fireConfigChanged();
-            }
-        }));
-        allRows.setAll(rows);
-        buildPackageIndex(rows);
-        // An import/default can happen while the asynchronous scan is still running.  The
-        // stored configuration must be applied only after rows exist, otherwise wildcard
-        // exclusions would be present in YAML but still look selected in the class table.
-        if (hasAppliedConfiguration) {
-            applyConfiguration(appliedIncludePackages, appliedIncludeClasses, appliedClassExcludeConditions,
-                    appliedMethodExcludePatterns);
-        } else if (!selectedPackageSet.isEmpty()) {
-            selectedPackageSet.addAll(expandIncludedPackages(new ArrayList<>(selectedPackageSet)));
-        }
-        buildPackageTree();
-        refreshVisibleRows();
-        setLoadingClasses(false);
-        fireConfigChanged();
-    }
-
-    private void setLoadingClasses(boolean loading) {
-        loadingClasses = loading;
-        packageSearchField.setDisable(loading);
-        packageTree.setDisable(loading);
-        classTable.setDisable(loading);
-        loadingLockedControls.forEach(control -> control.setDisable(loading));
-        getStyleClass().removeAll("class-selection-loading");
-        if (loading) {
-            getStyleClass().add("class-selection-loading");
-        }
-        if (onLoadingChanged != null) {
-            onLoadingChanged.accept(loading);
-        }
-    }
-
-    public boolean isLoadingClasses() {
-        return loadingClasses;
-    }
-
-    private void buildPackageIndex(List<ClassRow> rows) {
-        packageToRows.clear();
-        packageToDescendantRows.clear();
-        allPackages.clear();
-        for (ClassRow row : rows) {
-            String packageName = row.getPackageName();
-            packageToRows.computeIfAbsent(packageName, key -> new ArrayList<>()).add(row);
-            String[] parts = packageName.split("\\.");
-            String path = "";
-            for (String part : parts) {
-                if (part.isBlank()) continue;
-                path = path.isEmpty() ? part : path + "." + part;
-                packageToDescendantRows.computeIfAbsent(path, key -> new ArrayList<>()).add(row);
-            }
-        }
-        allPackages.addAll(packageToRows.keySet().stream().sorted().toList());
-    }
-
-    private void buildPackageTree() {
-        buildPackageTree(currentSelectedPackagePath());
-    }
-
-    private void buildPackageTree(String restorePath) {
-        rootItem.getChildren().clear();
-        searchPathSet.clear();
-        searchHitSet.clear();
-        Map<String, CheckBoxTreeItem<String>> nodes = new LinkedHashMap<>();
-        String needle = searchNeedle();
-        CheckBoxTreeItem<String> firstHit = null;
-        CheckBoxTreeItem<String> restoreItem = null;
-        for (String pkg : allPackages) {
-            if (pkg.isBlank()) continue;
-            if (!needle.isEmpty() && !packageMatches(pkg, needle)) continue;
-            String[] parts = pkg.split("\\.");
-            String path = "";
-            CheckBoxTreeItem<String> parent = rootItem;
-            for (String part : parts) {
-                path = path.isEmpty() ? part : path + "." + part;
-                if (!needle.isEmpty()) {
-                    searchPathSet.add(path);
-                    if (pathMatchesNeedle(path, needle)) {
-                        searchHitSet.add(path);
-                    }
-                }
-                CheckBoxTreeItem<String> item = nodes.get(path);
-                if (item == null) {
-                    item = new CheckBoxTreeItem<>(part);
-                    item.setIndependent(true);
-                    item.setSelected(isPackageSelected(path));
-                    item.setExpanded(!needle.isEmpty());
-                    nodes.put(path, item);
-                    parent.getChildren().add(item);
-                    if (item.isSelected()) revealParents(item);
-                    final CheckBoxTreeItem<String> treeItem = item;
-                    item.selectedProperty().addListener((obs, old, selected) -> {
-                        if (treeUpdating) return;
-                        handlePackageSelection(treeItemPath(treeItem), selected);
-                    });
-                }
-                if (!needle.isEmpty()) {
-                    item.setExpanded(true);
-                    if (firstHit == null && searchHitSet.contains(path)) {
-                        firstHit = item;
-                    }
-                }
-                if (restorePath != null && restorePath.equals(path)) {
-                    restoreItem = item;
-                }
-                parent = item;
-            }
-        }
-        sortTreeChildrenRecursive(rootItem);
-        rootItem.setExpanded(true);
-        packageTree.refresh();
-        CheckBoxTreeItem<String> target = restoreItem != null ? restoreItem : firstHit;
-        if (target != null) {
-            revealParents(target);
-            packageTree.getSelectionModel().select(target);
-            Platform.runLater(() -> {
-                int row = packageTree.getRow(target);
-                if (row >= 0) packageTree.scrollTo(Math.max(0, row - 4));
-            });
-        }
-        refreshSummary();
-    }
-
-    /** Computes the package hierarchy off the JavaFX thread, then commits it without blocking rendering. */
-    private void buildPackageTreeAsync(String restorePath, Runnable onComplete) {
-        if (packageTreeBuildTimeline != null) packageTreeBuildTimeline.stop();
-        List<String> packages = List.copyOf(allPackages);
-        Set<String> selectedPackages = Set.copyOf(selectedPackageSet);
-        String needle = searchNeedle();
-        reportProgress("正在分析包层级...");
-        Thread modelBuilder = new Thread(() -> {
-            PackageTreeModel model = packageTreeModel(packages, selectedPackages, needle);
-            Platform.runLater(() -> commitPackageTreeModel(model, needle, restorePath, onComplete));
-        }, "build-package-tree-model");
-        modelBuilder.setDaemon(true);
-        modelBuilder.start();
-    }
-
-    private static PackageTreeModel packageTreeModel(List<String> packages, Set<String> selectedPackages,
-                                                      String needle) {
-        Map<String, PackageTreeNode> nodes = new LinkedHashMap<>();
-        Set<String> paths = new LinkedHashSet<>();
-        Set<String> hits = new LinkedHashSet<>();
-        for (String pkg : packages) {
-            if (pkg.isBlank() || (!needle.isEmpty() && !pathMatchesNeedleStatic(pkg, needle))) continue;
-            String path = "";
-            String parentPath = "";
-            for (String part : pkg.split("\\.")) {
-                path = path.isEmpty() ? part : path + "." + part;
-                if (!needle.isEmpty()) {
-                    paths.add(path);
-                    if (pathMatchesNeedleStatic(path, needle)) hits.add(path);
-                }
-                nodes.putIfAbsent(path, new PackageTreeNode(path, parentPath, part,
-                        selectedPackages.contains(path)));
-                parentPath = path;
-            }
-        }
-        return new PackageTreeModel(List.copyOf(nodes.values()), paths, hits);
-    }
-
-    private void commitPackageTreeModel(PackageTreeModel model, String needle, String restorePath,
-                                        Runnable onComplete) {
-        rootItem.getChildren().clear();
-        searchPathSet.clear();
-        searchPathSet.addAll(model.searchPaths);
-        searchHitSet.clear();
-        searchHitSet.addAll(model.searchHits);
-        Map<String, CheckBoxTreeItem<String>> nodes = new LinkedHashMap<>();
-        final int[] nextIndex = {0};
-        final CheckBoxTreeItem<String>[] firstHit = new CheckBoxTreeItem[] {null};
-        final CheckBoxTreeItem<String>[] restoreItem = new CheckBoxTreeItem[] {null};
-        packageTreeBuildTimeline = new Timeline(new KeyFrame(javafx.util.Duration.millis(16), event -> {
-            int end = Math.min(nextIndex[0] + 300, model.nodes.size());
-            reportProgress("正在构建包树（" + end + " / " + model.nodes.size() + "）...");
-            for (int index = nextIndex[0]; index < end; index++) {
-                PackageTreeNode node = model.nodes.get(index);
-                CheckBoxTreeItem<String> parent = node.parentPath.isEmpty() ? rootItem : nodes.get(node.parentPath);
-                if (parent == null) continue;
-                CheckBoxTreeItem<String> item = new CheckBoxTreeItem<>(node.part);
-                item.setIndependent(true);
-                item.setSelected(node.selected);
-                item.setExpanded(!needle.isEmpty());
-                parent.getChildren().add(item);
-                if (node.selected) revealParents(item);
-                nodes.put(node.path, item);
-                item.selectedProperty().addListener((obs, old, selected) -> {
-                    if (!treeUpdating) handlePackageSelection(treeItemPath(item), selected);
-                });
-                if (firstHit[0] == null && model.searchHits.contains(node.path)) firstHit[0] = item;
-                if (restorePath != null && restorePath.equals(node.path)) restoreItem[0] = item;
-            }
-            nextIndex[0] = end;
-            if (end < model.nodes.size()) return;
-            packageTreeBuildTimeline.stop();
-            packageTreeBuildTimeline = null;
-            rootItem.setExpanded(true);
-            CheckBoxTreeItem<String> target = restoreItem[0] != null ? restoreItem[0] : firstHit[0];
-            if (target != null) {
-                revealParents(target);
-                packageTree.getSelectionModel().select(target);
-                Platform.runLater(() -> {
-                    int row = packageTree.getRow(target);
-                    if (row >= 0) packageTree.scrollTo(Math.max(0, row - 4));
-                });
-            }
-            reportProgress("正在刷新选择摘要...");
-            refreshSummary();
-            if (onComplete != null) onComplete.run();
-        }));
-        packageTreeBuildTimeline.setCycleCount(Timeline.INDEFINITE);
-        packageTreeBuildTimeline.play();
-    }
-
-    private static void revealParents(TreeItem<?> item) {
-        for (TreeItem<?> parent = item.getParent(); parent != null; parent = parent.getParent()) {
-            parent.setExpanded(true);
-        }
-    }
-
-    private String currentSelectedPackagePath() {
-        return treeItemPath(packageTree.getSelectionModel().getSelectedItem());
-    }
-
-    private boolean packageMatches(String packageName, String needle) {
-        return pathMatchesNeedle(packageName, needle);
-    }
-
-    private String searchNeedle() {
-        return packageSearchField.getText() == null
-                ? ""
-                : packageSearchField.getText().trim().toLowerCase(Locale.ROOT);
-    }
-
-    private boolean pathMatchesNeedle(String packagePath, String needle) {
-        return pathMatchesNeedleStatic(packagePath, needle);
-    }
-
-    private static boolean pathMatchesNeedleStatic(String packagePath, String needle) {
-        if (needle.isBlank()) return true;
-        String path = packagePath.toLowerCase(Locale.ROOT);
-        if (needle.contains(".")) {
-            return path.equals(needle) || path.startsWith(needle + ".") || path.contains("." + needle);
-        }
-        for (String segment : path.split("\\.")) {
-            if (segment.equals(needle) || segment.startsWith(needle)) return true;
-            if (needle.length() >= 3 && segment.contains(needle)) return true;
-        }
-        return false;
-    }
-
-    private boolean isPackageSelected(String packageName) {
-        return selectedPackageSet.contains(packageName);
-    }
-
-    private void sortTreeChildren(CheckBoxTreeItem<String> parent) {
-        parent.getChildren().sort(Comparator.comparing(item -> item.getValue().toString()));
-    }
-
-    private void sortTreeChildrenRecursive(CheckBoxTreeItem<String> parent) {
-        sortTreeChildren(parent);
-        for (TreeItem<String> child : parent.getChildren()) {
-            if (child instanceof CheckBoxTreeItem<String> checkBoxChild) {
-                sortTreeChildrenRecursive(checkBoxChild);
-            }
-        }
-    }
-
-    private void refreshVisibleRows() {
-        refreshVisibleRowsFromSelection();
-    }
-
-    private void handlePackageSelection(String packagePath, boolean selected) {
-        treeUpdating = true;
-        try {
-            applyPackageSelection(packagePath, selected);
-            rebuildSelectionFromPackageState();
-            rebuildExplicitClassExclusions();
-            buildPackageTree(packagePath);
-            refreshVisibleRowsFromSelection();
-            fireConfigChanged();
-        } finally {
-            treeUpdating = false;
-        }
-    }
-
-    private void applyPackageSelection(String packagePath, boolean selected) {
-        if (packagePath == null || packagePath.isBlank()) return;
-        Set<String> affected = packageToDescendantRows.keySet().stream()
-                .filter(path -> path.equals(packagePath) || path.startsWith(packagePath + "."))
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        if (packageToDescendantRows.containsKey(packagePath)) affected.add(packagePath);
-        if (affected.isEmpty()) affected.add(packagePath);
-        if (selected) {
-            selectedPackageSet.addAll(affected);
-        } else {
-            selectedPackageSet.removeAll(affected);
-        }
-    }
-
-    private void setVisibleRowsIncluded(boolean included) {
-        bulkUpdating = true;
-        try {
-            for (ClassRow row : visibleRows) {
-                if (row.isIncluded() == included) continue;
-                row.includedProperty().set(included);
-                includedSelectedClassCount += included ? 1 : -1;
-                if (included) explicitExcludedClassNames.remove(row.getClassName());
-                else explicitExcludedClassNames.add(row.getClassName());
-            }
-        } finally {
-            bulkUpdating = false;
-        }
-        refreshSummary();
-        fireConfigChanged();
-    }
-
-    private void invertVisibleRowsIncluded() {
-        bulkUpdating = true;
-        try {
-            for (ClassRow row : visibleRows) {
-                boolean included = !row.isIncluded();
-                row.includedProperty().set(included);
-                includedSelectedClassCount += included ? 1 : -1;
-                if (included) explicitExcludedClassNames.remove(row.getClassName());
-                else explicitExcludedClassNames.add(row.getClassName());
-            }
-        } finally {
-            bulkUpdating = false;
-        }
-        refreshSummary();
-        fireConfigChanged();
-    }
-
-    private void rebuildSelectionFromPackageState() {
-        selectedRows.clear();
-        selectedRows.addAll(allRows.stream()
-                .filter(this::isRowSelectedByPackageState)
-                .toList());
-        includedSelectedClassCount = selectedRows.stream().filter(ClassRow::isIncluded).count();
-    }
-
-    private void refreshVisibleRowsFromSelection() {
-        String classNeedle = classSearchField.getText() == null ? "" : classSearchField.getText().trim().toLowerCase();
-        filteredRows.clear();
-        filteredRows.addAll(selectedRows.stream()
-                .filter(row -> classNeedle.isEmpty()
-                        || row.getClassName().toLowerCase().contains(classNeedle)
-                        || row.getPackageName().toLowerCase().contains(classNeedle))
-                .toList());
-        currentPage = 0;
-        refreshCurrentPage();
-        refreshSummary();
-    }
-
-    private void changePage(int delta) {
-        int pageCount = pageCount();
-        int target = Math.max(0, Math.min(currentPage + delta, pageCount - 1));
-        if (target == currentPage) return;
-        currentPage = target;
-        refreshCurrentPage();
-    }
-
-    private void refreshCurrentPage() {
-        int pageCount = pageCount();
-        currentPage = Math.max(0, Math.min(currentPage, pageCount - 1));
-        int start = currentPage * CLASS_PAGE_SIZE;
-        int end = Math.min(start + CLASS_PAGE_SIZE, filteredRows.size());
-        visibleRows.setAll(start >= end ? List.of() : filteredRows.subList(start, end));
-        pageLabel.setText(filteredRows.isEmpty() ? "无匹配类" : "第 " + (currentPage + 1) + " / " + pageCount + " 页");
-        previousPageButton.setDisable(currentPage == 0 || filteredRows.isEmpty());
-        nextPageButton.setDisable(currentPage >= pageCount - 1 || filteredRows.isEmpty());
-    }
-
-    private int pageCount() {
-        return Math.max(1, (filteredRows.size() + CLASS_PAGE_SIZE - 1) / CLASS_PAGE_SIZE);
-    }
-
-    private boolean isRowSelectedByPackageState(ClassRow row) {
-        boolean selected = false;
-        String path = "";
-        for (String part : row.getPackageName().split("\\.")) {
-            if (part.isBlank()) continue;
-            path = path.isEmpty() ? part : path + "." + part;
-            if (packageToDescendantRows.containsKey(path)) {
-                selected = selectedPackageSet.contains(path);
-            }
-        }
-        return selected;
-    }
-
-    private boolean isRowUnderIncludedPackage(ClassRow row) {
-        for (String include : effectiveIncludedPackages()) {
-            if (row.getPackageName().equals(include) || row.getPackageName().startsWith(include + ".")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void refreshSummary() {
-        long packageCount = packageToRows.size();
-        long selectedPackageCount = selectedPackageSet.size();
-        classSummaryLabel.setText("已选类 " + includedSelectedClassCount + " 个");
-        packageSummaryLabel.setText("包选择（共 " + packageCount + " 个包，已选 " + selectedPackageCount + " 个）");
-    }
-
-    public SelectionMetrics getSelectionMetrics() {
-        long enhancedClasses = selectedRows.stream().filter(ClassRow::isIncluded).count();
-        long enhancedMethods = selectedRows.stream()
-                .filter(ClassRow::isIncluded)
-                .mapToLong(row -> row.getMonitorableMethodCount(excludedMethodPatterns))
-                .sum();
-        return new SelectionMetrics(enhancedClasses, enhancedMethods);
-    }
-
-    /** Calculates the preview footprint off the JavaFX thread after taking a lightweight UI snapshot. */
-    public void getSelectionMetricsAsync(Consumer<SelectionMetrics> onComplete) {
-        List<SelectionMetricRow> snapshot = selectedRows.stream()
-                .map(row -> new SelectionMetricRow(row.getClassName(), row.isIncluded(), row.getMethodNames()))
-                .toList();
-        Set<String> methodExcludes = Set.copyOf(excludedMethodPatterns);
-        Thread calculator = new Thread(() -> {
-            long classes = 0;
-            long methods = 0;
-            for (SelectionMetricRow row : snapshot) {
-                if (!row.included) continue;
-                classes++;
-                methods += row.methodNames.stream().filter(method -> methodExcludes.stream()
-                        .noneMatch(pattern -> ClassRow.methodPatternMatches(pattern, row.className, method))).count();
-            }
-            SelectionMetrics metrics = new SelectionMetrics(classes, methods);
-            Platform.runLater(() -> {
-                if (onComplete != null) onComplete.accept(metrics);
-            });
-        }, "calculate-selection-metrics");
-        calculator.setDaemon(true);
-        calculator.start();
-    }
-
-    /**
-     * Calculates the actual enhancement footprint for a configuration that may
-     * have been edited directly in the YAML editor. This deliberately does not
-     * read the current checkbox state: the YAML is the source of truth at
-     * attach time.
-     */
-    public SelectionMetrics metricsForConfiguration(List<String> includePackages, List<String> includeClasses,
-                                                     List<String> excludedClassConditions,
-                                                     List<String> excludedMethods) {
-        List<String> includes = includePackages == null ? List.of() : includePackages.stream()
-                .filter(value -> value != null && !value.isBlank())
-                .map(String::trim)
-                .distinct()
-                .toList();
-        Set<String> classIncludes = includeClasses == null ? Set.of() : includeClasses.stream()
-                .filter(value -> value != null && !value.isBlank())
-                .map(String::trim)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        List<String> classExcludes = excludedClassConditions == null ? List.of() : excludedClassConditions.stream()
-                .filter(value -> value != null && !value.isBlank())
-                .map(String::trim)
-                .toList();
-        Set<String> methodExcludes = new LinkedHashSet<>();
-        if (excludedMethods != null) {
-            excludedMethods.stream()
-                    .filter(value -> value != null && !value.isBlank())
-                    .map(String::trim)
-                    .forEach(methodExcludes::add);
-        }
-
-        long enhancedClasses = 0;
-        long enhancedMethods = 0;
-        for (ClassRow row : allRows) {
-            boolean included = includes.stream().anyMatch(include ->
-                    row.getPackageName().equals(include) || row.getPackageName().startsWith(include + "."))
-                    || classIncludes.contains(row.getClassName());
-            if (!included || classExcludes.stream().anyMatch(condition -> matchesClassExclude(condition, row))) {
-                continue;
-            }
-            enhancedClasses++;
-            enhancedMethods += row.getMonitorableMethodCount(methodExcludes);
-        }
-        return new SelectionMetrics(enhancedClasses, enhancedMethods);
-    }
-
-    public String getPackagePrefixes() {
-        return String.join("|", effectiveIncludedPackages());
-    }
-
-    public String getExcludedClassConditions() {
-        return getExcludedClassConditionList().stream()
-                .collect(Collectors.joining("|"));
-    }
-
-    public List<String> getExcludedClassConditionList() {
-        List<String> conditions = new ArrayList<>(extraClassExcludeConditions);
-        conditions.addAll(explicitExcludedClassNames.stream().map(className -> "cls:" + className).toList());
-        return conditions.stream().distinct().toList();
-    }
-
-    public List<String> getIncludedPackages() {
-        return effectiveIncludedPackages();
-    }
-
-    public List<String> getIncludedClasses() {
-        return appliedIncludeClasses;
-    }
-
-    public List<String> getExcludedClasses() {
-        return excludedClassRows().stream()
-                .map(ClassRow::getClassName)
-                .toList();
-    }
-
-    public List<String> getExcludedMethods() {
-        return excludedMethodPatterns.stream()
-                .filter(pattern -> !pattern.isBlank())
-                .toList();
-    }
-
-    public void applyConfiguration(List<String> includePackages, List<String> includeClasses,
-                                   List<String> excludedClassConditions,
-                                   List<String> excludedMethods) {
-        appliedIncludePackages = normalizedValues(includePackages);
-        appliedIncludeClasses = normalizedValues(includeClasses);
-        appliedClassExcludeConditions = normalizedValues(excludedClassConditions);
-        appliedMethodExcludePatterns = normalizedValues(excludedMethods);
-        hasAppliedConfiguration = true;
-        bulkUpdating = true;
-        treeUpdating = true;
-        try {
-            packageSearchField.clear();
-            selectedPackageSet.clear();
-            selectedPackageSet.addAll(expandIncludedPackages(appliedIncludePackages));
-            Set<String> exactIncludedClasses = new LinkedHashSet<>(appliedIncludeClasses);
-
-            List<String> classConditions = appliedClassExcludeConditions;
-            Set<String> loadedClassNames = allRows.stream()
-                    .map(ClassRow::getClassName)
-                    .collect(Collectors.toSet());
-            Set<String> exactExcludedClasses = new LinkedHashSet<>();
-            List<String> wildcardClassConditions = new ArrayList<>();
-            List<String> packageExcludePatterns = new ArrayList<>();
-            extraClassExcludeConditions.clear();
-            for (String condition : classConditions) {
-                if (condition.startsWith("pkg:")) {
-                    String pkg = condition.substring(4).trim();
-                    if (!pkg.isEmpty()) {
-                        packageExcludePatterns.add(pkg);
-                        extraClassExcludeConditions.add(condition);
-                    }
-                } else if (condition.startsWith("cls:")) {
-                    String className = condition.substring(4).trim();
-                    if (className.isEmpty()) continue;
-                    if (className.contains("*")) {
-                        wildcardClassConditions.add(condition);
-                        extraClassExcludeConditions.add(condition);
-                    } else {
-                        exactExcludedClasses.add(className);
-                        if (!loadedClassNames.contains(className)) {
-                            extraClassExcludeConditions.add(condition);
-                        }
-                    }
-                }
-            }
-            for (ClassRow row : allRows) {
-                boolean excluded = exactExcludedClasses.contains(row.getClassName())
-                        || packageExcludePatterns.stream().anyMatch(pkg ->
-                                PackagePatternMatcher.matches(pkg, row.getPackageName()))
-                        || wildcardClassConditions.stream().anyMatch(condition ->
-                                matchesClassExclude(condition, row));
-                boolean included = (isRowSelectedByPackageState(row)
-                        || exactIncludedClasses.contains(row.getClassName())) && !excluded;
-                if (row.isIncluded() != included) {
-                    row.includedProperty().set(included);
-                }
-            }
-
-            excludedMethodPatterns.clear();
-            excludedMethodPatterns.addAll(appliedMethodExcludePatterns);
-
-            selectedRows.clear();
-            selectedRows.addAll(allRows.stream()
-                    .filter(row -> isRowSelectedByPackageState(row)
-                            || exactIncludedClasses.contains(row.getClassName()))
-                    .toList());
-            rebuildExplicitClassExclusions();
-            includedSelectedClassCount = selectedRows.stream().filter(ClassRow::isIncluded).count();
-            buildPackageTree();
-            refreshVisibleRowsFromSelection();
-        } finally {
-            treeUpdating = false;
-            bulkUpdating = false;
-        }
-        fireConfigChanged();
-    }
-
-    /** Applies a large YAML scope in batches so JavaFX can keep rendering the loading overlay. */
-    public void applyConfigurationAsync(List<String> includePackages, List<String> includeClasses,
-                                        List<String> excludedClassConditions,
-                                        List<String> excludedMethods, Runnable onComplete) {
-        if (configurationApplyTimeline != null) configurationApplyTimeline.stop();
-        reportProgress("正在准备 YAML 配置...");
-        appliedIncludePackages = normalizedValues(includePackages);
-        appliedIncludeClasses = normalizedValues(includeClasses);
-        appliedClassExcludeConditions = normalizedValues(excludedClassConditions);
-        appliedMethodExcludePatterns = normalizedValues(excludedMethods);
-        hasAppliedConfiguration = true;
-        bulkUpdating = true;
-        treeUpdating = true;
-        packageSearchField.clear();
-        selectedPackageSet.clear();
-        selectedPackageSet.addAll(expandIncludedPackages(appliedIncludePackages));
-        Set<String> exactIncludedClasses = new LinkedHashSet<>(appliedIncludeClasses);
-
-        Set<String> loadedClassNames = allRows.stream().map(ClassRow::getClassName).collect(Collectors.toSet());
-        Set<String> exactExcludedClasses = new LinkedHashSet<>();
-        List<String> wildcardClassConditions = new ArrayList<>();
-        List<String> packageExcludePatterns = new ArrayList<>();
-        extraClassExcludeConditions.clear();
-        for (String condition : appliedClassExcludeConditions) {
-            if (condition.startsWith("pkg:")) {
-                String pkg = condition.substring(4).trim();
-                if (!pkg.isEmpty()) {
-                    packageExcludePatterns.add(pkg);
-                    extraClassExcludeConditions.add(condition);
-                }
-            } else if (condition.startsWith("cls:")) {
-                String className = condition.substring(4).trim();
-                if (className.isEmpty()) continue;
-                if (className.contains("*")) {
-                    wildcardClassConditions.add(condition);
-                    extraClassExcludeConditions.add(condition);
-                } else {
-                    exactExcludedClasses.add(className);
-                    if (!loadedClassNames.contains(className)) extraClassExcludeConditions.add(condition);
-                }
-            }
-        }
-        excludedMethodPatterns.clear();
-        excludedMethodPatterns.addAll(appliedMethodExcludePatterns);
-
-        List<ClassRow> rows = List.copyOf(allRows);
-        List<ClassIdentity> identities = rows.stream()
-                .map(row -> new ClassIdentity(row.getClassName(), row.getPackageName(), row.getSimpleName()))
-                .toList();
-        Thread matcher = new Thread(() -> {
-            reportProgress("正在匹配类筛选规则（共 " + identities.size() + " 个类）...");
-            boolean[] included = new boolean[identities.size()];
-            for (int index = 0; index < identities.size(); index++) {
-                ClassIdentity identity = identities.get(index);
-                boolean excluded = exactExcludedClasses.contains(identity.className)
-                        || packageExcludePatterns.stream().anyMatch(pkg ->
-                                PackagePatternMatcher.matches(pkg, identity.packageName))
-                        || wildcardClassConditions.stream().anyMatch(condition ->
-                                matchesClassExclude(condition, identity));
-                boolean inIncludedPackage = appliedIncludePackages.stream().anyMatch(include ->
-                        identity.packageName.equals(include) || identity.packageName.startsWith(include + "."));
-                included[index] = (inIncludedPackage || exactIncludedClasses.contains(identity.className)) && !excluded;
-            }
-            Platform.runLater(() -> applyIncludedRowsInBatches(rows, included, exactIncludedClasses, onComplete));
-        }, "match-yaml-class-scope");
-        matcher.setDaemon(true);
-        matcher.start();
-    }
-
-    private void applyIncludedRowsInBatches(List<ClassRow> rows, boolean[] included,
-                                            Set<String> exactIncludedClasses, Runnable onComplete) {
-        final int[] nextIndex = {0};
-        configurationApplyTimeline = new Timeline(new KeyFrame(javafx.util.Duration.millis(16), event -> {
-            int end = Math.min(nextIndex[0] + 300, rows.size());
-            reportProgress("正在更新类选择（" + end + " / " + rows.size() + "）...");
-            for (int index = nextIndex[0]; index < end; index++) {
-                ClassRow row = rows.get(index);
-                if (row.isIncluded() != included[index]) row.includedProperty().set(included[index]);
-            }
-            nextIndex[0] = end;
-            if (end < rows.size()) return;
-            configurationApplyTimeline.stop();
-            configurationApplyTimeline = null;
-            selectedRows.clear();
-            selectedRows.addAll(allRows.stream().filter(row -> isRowSelectedByPackageState(row)
-                    || exactIncludedClasses.contains(row.getClassName())).toList());
-            rebuildExplicitClassExclusions();
-            includedSelectedClassCount = selectedRows.stream().filter(ClassRow::isIncluded).count();
-            reportProgress("正在生成包树...");
-            buildPackageTreeAsync(currentSelectedPackagePath(), () -> {
-                refreshVisibleRowsFromSelection();
-                treeUpdating = false;
-                bulkUpdating = false;
-                fireConfigChanged();
-                if (onComplete != null) onComplete.run();
-            });
-        }));
-        configurationApplyTimeline.setCycleCount(Timeline.INDEFINITE);
-        configurationApplyTimeline.play();
-    }
-
-    private static List<String> normalizedValues(List<String> values) {
-        if (values == null || values.isEmpty()) return List.of();
-        return values.stream()
-                .filter(value -> value != null && !value.isBlank())
-                .map(String::trim)
-                .distinct()
-                .toList();
-    }
-
-    private void reportProgress(String message) {
-        if (onProgressChanged == null || message == null || message.isBlank()) return;
-        if (Platform.isFxApplicationThread()) {
-            onProgressChanged.accept(message);
-        } else {
-            Platform.runLater(() -> onProgressChanged.accept(message));
-        }
-    }
-
-    private Set<String> expandIncludedPackages(List<String> includes) {
-        List<String> prefixes = includes.stream()
-                .map(value -> value == null ? "" : value.trim())
-                .filter(value -> !value.isEmpty())
-                .distinct()
-                .toList();
-        Set<String> expanded = new LinkedHashSet<>(prefixes);
-        if (prefixes.isEmpty()) return expanded;
-        for (String packagePath : packageToDescendantRows.keySet()) {
-            for (String prefix : prefixes) {
-                if (packagePath.equals(prefix) || packagePath.startsWith(prefix + ".")) {
-                    expanded.add(packagePath);
-                    break;
-                }
-            }
-        }
-        return expanded;
-    }
-
-    private List<String> effectiveIncludedPackages() {
-        List<String> includes = new ArrayList<>();
-        for (String pkg : selectedPackageSet.stream().sorted().toList()) {
-            boolean coveredByParent = includes.stream()
-                    .anyMatch(parent -> pkg.equals(parent) || pkg.startsWith(parent + "."));
-            if (!coveredByParent) includes.add(pkg);
-        }
-        return includes;
-    }
-
-    private List<ClassRow> excludedClassRows() {
-        return allRows.stream()
-                .filter(this::isRowUnderIncludedPackage)
-                .filter(row -> !isRowSelectedByPackageState(row) || !row.isIncluded())
-                .toList();
-    }
-
-    private void showClassExcludeDialog() {
-        Dialog<ButtonType> dialog = new Dialog<>();
-        dialog.setTitle("排除类配置");
-        dialog.setHeaderText("优先从已缓存的类索引中勾选；手动规则仅作为兜底。");
-        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-
-        VBox presets = new VBox(8);
-        presets.getStyleClass().add("method-rule-presets");
-        List<ClassSelectionRules.ClassRulePreset> presetRules = ClassSelectionRules.classRulePresets();
-        List<CheckBox> checkBoxes = new ArrayList<>();
-        for (ClassSelectionRules.ClassRulePreset preset : presetRules) {
-            CheckBox box = new CheckBox(preset.label() + "  (" + String.join(", ", preset.conditions()) + ")");
-            box.setSelected(extraClassExcludeConditions.containsAll(preset.conditions()));
-            box.getStyleClass().add("method-rule-checkbox");
-            checkBoxes.add(box);
-            presets.getChildren().add(box);
-        }
-
-        TextField classSearch = new TextField();
-        classSearch.setPromptText("搜索类名 / 包名 / 类型");
-        classSearch.getStyleClass().add("search-field");
-
-        ObservableList<ClassExcludeRow> allClassRows = FXCollections.observableArrayList(buildClassExcludeRows());
-        ObservableList<ClassExcludeRow> visibleClassRows = FXCollections.observableArrayList(allClassRows);
-        TableView<ClassExcludeRow> excludeTable = new TableView<>(visibleClassRows);
-        excludeTable.getStyleClass().add("class-table");
-        excludeTable.setEditable(true);
-        excludeTable.setPrefHeight(320);
-
-        TableColumn<ClassExcludeRow, Boolean> excludeCol = new TableColumn<>("");
-        excludeCol.setCellValueFactory(cell -> cell.getValue().excludedProperty());
-        excludeCol.setCellFactory(CheckBoxTableCell.forTableColumn(excludeCol));
-        excludeCol.setEditable(true);
-        excludeCol.setPrefWidth(46);
-        excludeCol.setMaxWidth(52);
-
-        TableColumn<ClassExcludeRow, String> classCol = new TableColumn<>("类名");
-        classCol.setCellValueFactory(new PropertyValueFactory<>("simpleName"));
-        classCol.setPrefWidth(220);
-
-        TableColumn<ClassExcludeRow, String> pkgCol = new TableColumn<>("包名");
-        pkgCol.setCellValueFactory(new PropertyValueFactory<>("packageName"));
-        pkgCol.setPrefWidth(360);
-
-        TableColumn<ClassExcludeRow, String> typeCol = new TableColumn<>("类型");
-        typeCol.setCellValueFactory(new PropertyValueFactory<>("type"));
-        typeCol.setPrefWidth(120);
-
-        TableColumn<ClassExcludeRow, Integer> methodCol = new TableColumn<>("方法数");
-        methodCol.setCellValueFactory(new PropertyValueFactory<>("methodCount"));
-        methodCol.setPrefWidth(78);
-
-        excludeTable.getColumns().addAll(excludeCol, classCol, pkgCol, typeCol, methodCol);
-        classSearch.textProperty().addListener((obs, old, value) -> {
-            String needle = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-            visibleClassRows.setAll(allClassRows.stream()
-                    .filter(row -> needle.isEmpty()
-                            || row.getClassName().toLowerCase(Locale.ROOT).contains(needle)
-                            || row.getPackageName().toLowerCase(Locale.ROOT).contains(needle)
-                            || row.getType().toLowerCase(Locale.ROOT).contains(needle))
-                    .toList());
-        });
-
-        Button excludeVisible = new Button("排除当前结果");
-        excludeVisible.getStyleClass().add("ghost-btn");
-        excludeVisible.setOnAction(e -> visibleClassRows.forEach(row -> row.excludedProperty().set(true)));
-        Button includeVisible = new Button("取消当前结果");
-        includeVisible.getStyleClass().add("ghost-btn");
-        includeVisible.setOnAction(e -> visibleClassRows.forEach(row -> row.excludedProperty().set(false)));
-        Region classSpacer = new Region();
-        HBox.setHgrow(classSpacer, Priority.ALWAYS);
-        HBox classTools = new HBox(8, classSearch, classSpacer, excludeVisible, includeVisible);
-        classTools.setAlignment(Pos.CENTER_LEFT);
-        HBox.setHgrow(classSearch, Priority.ALWAYS);
-
-        TextArea customRules = new TextArea(customClassExcludeConditions(presetRules));
-        customRules.setPromptText("每行一个规则，例如：\ncls:*DTO\ncls:com.example.UserDTO\npkg:com.example.internal");
-        customRules.setPrefRowCount(4);
-        customRules.setWrapText(false);
-        customRules.getStyleClass().add("method-rule-textarea");
-
-        Label hint = new Label("规则支持 cls:完整类名、cls:*DTO、pkg:包名前缀；保存后写入 YAML 并在开始监控时生效。");
-        hint.getStyleClass().add("hint-label");
-        VBox content = new VBox(12,
-                section("快捷排除"),
-                presets,
-                section("从类索引选择"),
-                classTools,
-                excludeTable,
-                section("手动兜底规则"),
-                customRules,
-                hint);
-        content.setPadding(new Insets(4));
-        content.setPrefWidth(860);
-        dialog.getDialogPane().setPrefSize(940, 740);
-        dialog.getDialogPane().setContent(content);
-        dialog.getDialogPane().getStylesheets().addAll(
-                getScene() != null ? getScene().getStylesheets() : List.of());
-
-        dialog.showAndWait().filter(ButtonType.OK::equals).ifPresent(ok -> {
-            extraClassExcludeConditions.clear();
-            for (int i = 0; i < presetRules.size(); i++) {
-                if (checkBoxes.get(i).isSelected()) {
-                    extraClassExcludeConditions.addAll(presetRules.get(i).conditions());
-                }
-            }
-            for (String line : customRules.getText().split("\\R")) {
-                String condition = ClassSelectionRules.normalizeClassExcludeCondition(line.trim());
-                if (!condition.isEmpty() && !condition.startsWith("#")) {
-                    extraClassExcludeConditions.add(condition);
-                }
-            }
-
-            bulkUpdating = true;
-            try {
-                Set<String> exactExcluded = allClassRows.stream()
-                        .filter(ClassExcludeRow::isExcluded)
-                        .map(row -> "cls:" + row.getClassName())
-                        .collect(Collectors.toSet());
-                for (ClassRow row : allRows) {
-                    boolean excludedByExact = exactExcluded.contains("cls:" + row.getClassName());
-                    boolean excludedByRule = extraClassExcludeConditions.stream()
-                            .anyMatch(condition -> matchesClassExclude(condition, row));
-                    row.includedProperty().set(!(excludedByExact || excludedByRule));
-                }
-            } finally {
-                bulkUpdating = false;
-            }
-            refreshVisibleRowsFromSelection();
-            fireConfigChanged();
-        });
-    }
-
-    private List<ClassExcludeRow> buildClassExcludeRows() {
-        return allRows.stream()
-                .filter(this::isRowUnderIncludedPackage)
-                .sorted(Comparator.comparing(ClassRow::getClassName))
-                .map(row -> new ClassExcludeRow(row, !row.isIncluded()))
-                .toList();
-    }
-
-    private String customClassExcludeConditions(List<ClassSelectionRules.ClassRulePreset> presets) {
-        Set<String> presetConditions = presets.stream()
-                .flatMap(preset -> preset.conditions().stream())
-                .collect(Collectors.toSet());
-        return extraClassExcludeConditions.stream()
-                .filter(condition -> !presetConditions.contains(condition))
-                .collect(Collectors.joining("\n"));
-    }
-
-    private static boolean matchesClassExclude(String condition, ClassRow row) {
-        return ClassSelectionRules.matchesClassExclude(condition, row.getClassName(), row.getSimpleName(),
-                row.getPackageName());
-    }
-
-    private static boolean matchesClassExclude(String condition, ClassIdentity identity) {
-        return ClassSelectionRules.matchesClassExclude(condition, identity.className, identity.simpleName,
-                identity.packageName);
-    }
-
-    public static class ClassExcludeRow {
-        private final ClassRow classRow;
-        private final BooleanProperty excluded = new SimpleBooleanProperty(false);
-
-        ClassExcludeRow(ClassRow classRow, boolean excluded) {
-            this.classRow = classRow;
-            this.excluded.set(excluded);
-        }
-
-        public String getClassName() { return classRow.getClassName(); }
-        public String getSimpleName() { return classRow.getSimpleName(); }
-        public String getPackageName() { return classRow.getPackageName(); }
-        public String getType() { return classRow.getType(); }
-        public int getMethodCount() { return classRow.getMethodCount(); }
-        public boolean isExcluded() { return excluded.get(); }
-        public BooleanProperty excludedProperty() { return excluded; }
-    }
-
-    private void showMethodExcludeDialog() {
-        Dialog<ButtonType> dialog = new Dialog<>();
-        dialog.setTitle("排除方法配置");
-        dialog.setHeaderText("优先从已缓存的方法索引中勾选；手动输入仅作为兜底。");
-        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-
-        VBox presets = new VBox(8);
-        presets.getStyleClass().add("method-rule-presets");
-        List<ClassSelectionRules.MethodRulePreset> presetRules = ClassSelectionRules.methodRulePresets();
-        List<CheckBox> checkBoxes = new ArrayList<>();
-        for (ClassSelectionRules.MethodRulePreset preset : presetRules) {
-            CheckBox box = new CheckBox(preset.label() + "  (" + String.join(", ", preset.patterns()) + ")");
-            box.setSelected(excludedMethodPatterns.containsAll(preset.patterns()));
-            box.getStyleClass().add("method-rule-checkbox");
-            checkBoxes.add(box);
-            presets.getChildren().add(box);
-        }
-
-        TextField methodSearch = new TextField();
-        methodSearch.setPromptText("搜索方法 / 类名 / 包名");
-        methodSearch.getStyleClass().add("search-field");
-
-        ObservableList<MethodRow> allMethodRows = FXCollections.observableArrayList(buildIndexedMethodRows());
-        ObservableList<MethodRow> visibleMethodRows = FXCollections.observableArrayList(allMethodRows);
-        TableView<MethodRow> methodTable = new TableView<>(visibleMethodRows);
-        methodTable.getStyleClass().add("class-table");
-        methodTable.setEditable(true);
-        methodTable.setPrefHeight(300);
-
-        TableColumn<MethodRow, Boolean> excludeCol = new TableColumn<>("");
-        excludeCol.setCellValueFactory(cell -> cell.getValue().excludedProperty());
-        excludeCol.setCellFactory(CheckBoxTableCell.forTableColumn(excludeCol));
-        excludeCol.setEditable(true);
-        excludeCol.setPrefWidth(46);
-        excludeCol.setMaxWidth(52);
-
-        TableColumn<MethodRow, String> methodCol = new TableColumn<>("方法");
-        methodCol.setCellValueFactory(new PropertyValueFactory<>("methodName"));
-        methodCol.setPrefWidth(170);
-
-        TableColumn<MethodRow, String> classCol = new TableColumn<>("类");
-        classCol.setCellValueFactory(new PropertyValueFactory<>("simpleClassName"));
-        classCol.setPrefWidth(190);
-
-        TableColumn<MethodRow, String> packageCol = new TableColumn<>("包名");
-        packageCol.setCellValueFactory(new PropertyValueFactory<>("packageName"));
-        packageCol.setPrefWidth(300);
-
-        methodTable.getColumns().addAll(excludeCol, methodCol, classCol, packageCol);
-        methodSearch.textProperty().addListener((obs, old, value) -> {
-            String needle = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-            visibleMethodRows.setAll(allMethodRows.stream()
-                    .filter(row -> needle.isEmpty()
-                            || row.getMethodName().toLowerCase(Locale.ROOT).contains(needle)
-                            || row.getClassName().toLowerCase(Locale.ROOT).contains(needle)
-                            || row.getPackageName().toLowerCase(Locale.ROOT).contains(needle))
-                    .toList());
-        });
-
-        Button selectVisible = new Button("排除当前结果");
-        selectVisible.getStyleClass().add("ghost-btn");
-        selectVisible.setOnAction(e -> visibleMethodRows.forEach(row -> row.excludedProperty().set(true)));
-        Button clearVisible = new Button("取消当前结果");
-        clearVisible.getStyleClass().add("ghost-btn");
-        clearVisible.setOnAction(e -> visibleMethodRows.forEach(row -> row.excludedProperty().set(false)));
-        Region methodSpacer = new Region();
-        HBox.setHgrow(methodSpacer, Priority.ALWAYS);
-        HBox methodTools = new HBox(8, methodSearch, methodSpacer, selectVisible, clearVisible);
-        methodTools.setAlignment(Pos.CENTER_LEFT);
-        HBox.setHgrow(methodSearch, Priority.ALWAYS);
-
-        TextArea customRules = new TextArea(customMethodPatterns(presetRules));
-        customRules.setPromptText("每行一个规则，例如：\nfind*\n*.internal*\ncom.example.UserService.refreshCache");
-        customRules.setPrefRowCount(4);
-        customRules.setWrapText(false);
-        customRules.getStyleClass().add("method-rule-textarea");
-
-        Label hint = new Label("规则支持方法名通配符（get*）、类名+方法名（com.xxx.Service.find*），保存后写入 YAML 并在开始监控时生效。");
-        hint.getStyleClass().add("hint-label");
-        VBox content = new VBox(12,
-                section("常用排除"),
-                presets,
-                section("从方法索引选择"),
-                methodTools,
-                methodTable,
-                section("手动兜底规则"),
-                customRules,
-                hint);
-        content.setPadding(new Insets(4));
-        content.setPrefWidth(820);
-        dialog.getDialogPane().setContent(content);
-        dialog.getDialogPane().setPrefSize(900, 720);
-        dialog.getDialogPane().getStylesheets().addAll(
-                getScene() != null ? getScene().getStylesheets() : List.of());
-
-        dialog.showAndWait().filter(ButtonType.OK::equals).ifPresent(ok -> {
-            excludedMethodPatterns.clear();
-            for (int i = 0; i < presetRules.size(); i++) {
-                if (checkBoxes.get(i).isSelected()) {
-                    excludedMethodPatterns.addAll(presetRules.get(i).patterns());
-                }
-            }
-            allMethodRows.stream()
-                    .filter(MethodRow::isExcluded)
-                    .map(MethodRow::getExactPattern)
-                    .forEach(excludedMethodPatterns::add);
-            for (String line : customRules.getText().split("\\R")) {
-                String pattern = line.trim();
-                if (!pattern.isEmpty() && !pattern.startsWith("#")) {
-                    excludedMethodPatterns.add(pattern);
-                }
-            }
-            refreshSummary();
-            fireConfigChanged();
-        });
-    }
-
-    private List<MethodRow> buildIndexedMethodRows() {
-        return allRows.stream()
-                .filter(this::isRowUnderIncludedPackage)
-                .sorted(Comparator.comparing(ClassRow::getClassName))
-                .flatMap(row -> row.getMethodNames().stream()
-                        .sorted()
-                        .map(method -> new MethodRow(row.getClassName(), method,
-                                excludedMethodPatterns.contains(row.getClassName() + "." + method))))
-                .toList();
-    }
-
-    private String customMethodPatterns(List<ClassSelectionRules.MethodRulePreset> presets) {
-        Set<String> presetPatterns = presets.stream()
-                .flatMap(preset -> preset.patterns().stream())
-                .collect(Collectors.toSet());
-        Set<String> indexedPatterns = indexedExactMethodPatterns();
-        return excludedMethodPatterns.stream()
-                .filter(pattern -> !presetPatterns.contains(pattern))
-                .filter(pattern -> !indexedPatterns.contains(pattern))
-                .collect(Collectors.joining("\n"));
-    }
-
-    private Set<String> indexedExactMethodPatterns() {
-        return allRows.stream()
-                .flatMap(row -> row.getMethodNames().stream()
-                        .map(method -> row.getClassName() + "." + method))
-                .collect(Collectors.toSet());
-    }
-
-    public static class MethodRow {
-        private final String className;
-        private final String methodName;
-        private final String simpleClassName;
-        private final String packageName;
-        private final BooleanProperty excluded = new SimpleBooleanProperty(false);
-
-        MethodRow(String className, String methodName, boolean excluded) {
-            this.className = className;
-            this.methodName = methodName;
-            int dot = className.lastIndexOf('.');
-            this.simpleClassName = dot >= 0 ? className.substring(dot + 1) : className;
-            this.packageName = dot >= 0 ? className.substring(0, dot) : "";
-            this.excluded.set(excluded);
-        }
-
-        public String getClassName() { return className; }
-        public String getMethodName() { return methodName; }
-        public String getSimpleClassName() { return simpleClassName; }
-        public String getPackageName() { return packageName; }
-        public String getExactPattern() { return className + "." + methodName; }
-        public boolean isExcluded() { return excluded.get(); }
-        public BooleanProperty excludedProperty() { return excluded; }
-    }
-
-    private void fireConfigChanged() {
-        // Preserve the effective state for a later class-index reload.  This also means a
-        // package/class/method action and an imported YAML have the same source of truth.
-        appliedIncludePackages = normalizedValues(effectiveIncludedPackages());
-        // A class-only YAML scope has no selected package-tree node. Keep its exact whitelist
-        // while package and method controls are edited elsewhere in the panel.
-        appliedIncludeClasses = normalizedValues(appliedIncludeClasses);
-        appliedClassExcludeConditions = normalizedValues(getExcludedClassConditionList());
-        appliedMethodExcludePatterns = normalizedValues(getExcludedMethods());
-        hasAppliedConfiguration = true;
-        if (onConfigChanged != null) onConfigChanged.accept(null);
-    }
-
-    private void rebuildExplicitClassExclusions() {
-        explicitExcludedClassNames.clear();
-        for (ClassRow row : excludedClassRows()) {
-            if (extraClassExcludeConditions.stream().noneMatch(condition -> matchesClassExclude(condition, row))) {
-                explicitExcludedClassNames.add(row.getClassName());
-            }
-        }
-    }
-
-    /**
-     * A rule such as {@code cls:*DTO} cannot express a one-class inclusion override.  If a user
-     * explicitly reselects one matching loaded class, turn that rule into exact exclusions for
-     * the remaining selected rows.  The regenerated YAML then says precisely what the table
-     * shows instead of silently keeping the old wildcard rule.
-     */
-    private void reconcileRuleOverridesFromClassSelection() {
-        List<String> overriddenRules = extraClassExcludeConditions.stream()
-                .filter(condition -> allRows.stream().anyMatch(row -> isRowUnderIncludedPackage(row)
-                        && row.isIncluded() && matchesClassExclude(condition, row)))
-                .toList();
-        for (String condition : overriddenRules) {
-            extraClassExcludeConditions.remove(condition);
-            allRows.stream()
-                    .filter(this::isRowUnderIncludedPackage)
-                    .filter(row -> !row.isIncluded())
-                    .filter(row -> matchesClassExclude(condition, row))
-                    .map(row -> "cls:" + row.getClassName())
-                    .forEach(extraClassExcludeConditions::add);
-        }
-    }
-
-    public record SelectionMetrics(long enhancedClasses, long enhancedMethods) {}
-
-    private record ClassIdentity(String className, String packageName, String simpleName) {}
-
-    private record SelectionMetricRow(String className, boolean included, List<String> methodNames) {}
-
-    private record PackageTreeNode(String path, String parentPath, String part, boolean selected) {}
-
-    private record PackageTreeModel(List<PackageTreeNode> nodes, Set<String> searchPaths,
-                                    Set<String> searchHits) {}
-
     public record ActualEnhancementMetrics(long transformedClasses, long failedClasses,
                                            long transformedMethods) {}
 
@@ -1664,64 +578,4 @@ public class ClassSelectionPane extends SplitPane {
     private record ActualEnhancementRow(String className, String category, String status, String trigger,
                                         int methodCount, List<String> methodNames, String reason) {}
 
-    public static class ClassRow {
-        private final StringProperty className = new SimpleStringProperty();
-        private final StringProperty simpleName = new SimpleStringProperty();
-        private final StringProperty packageName = new SimpleStringProperty();
-        private final StringProperty type = new SimpleStringProperty();
-        private final BooleanProperty included = new SimpleBooleanProperty(true);
-        private final List<String> methodNames;
-
-        ClassRow(String className, List<String> methodNames) {
-            this.className.set(className);
-            this.methodNames = methodNames == null ? List.of() : List.copyOf(methodNames);
-            int dot = className.lastIndexOf('.');
-            this.simpleName.set(dot >= 0 ? className.substring(dot + 1) : className);
-            this.packageName.set(dot >= 0 ? className.substring(0, dot) : "");
-            this.type.set(guessType(this.simpleName.get()));
-        }
-
-        public String getClassName() { return className.get(); }
-        public String getSimpleName() { return simpleName.get(); }
-        public String getPackageName() { return packageName.get(); }
-        public String getType() { return type.get(); }
-        public int getMethodCount() { return methodNames.size(); }
-        public List<String> getMethodNames() { return methodNames; }
-        public int getMonitorableMethodCount(Set<String> excludedPatterns) {
-            if (methodNames.isEmpty()) return 0;
-            return (int) methodNames.stream()
-                    .filter(method -> excludedPatterns.stream().noneMatch(pattern ->
-                            methodPatternMatches(pattern, className.get(), method)))
-                    .count();
-        }
-        public String getCallCount() { return "-"; }
-        public String getAverageDuration() { return "-"; }
-        public String getStatus() { return isIncluded() ? "已包含" : "已排除"; }
-        public boolean isIncluded() { return included.get(); }
-        public BooleanProperty includedProperty() { return included; }
-
-        private static String guessType(String name) {
-            if (name.endsWith("Controller")) return "Controller";
-            if (name.endsWith("Service") || name.endsWith("ServiceImpl")) return "Service";
-            if (name.endsWith("Mapper")) return "Mapper";
-            if (name.endsWith("Repository")) return "Repository";
-            if (name.endsWith("Listener")) return "Listener";
-            if (name.endsWith("Config")) return "Config";
-            if (name.endsWith("DTO") || name.endsWith("VO")) return "DTO/VO";
-            return "Class";
-        }
-
-        private static boolean methodPatternMatches(String pattern, String className, String methodName) {
-            if (pattern == null || pattern.isBlank()) return false;
-            String value = pattern.trim();
-            if (value.matches("[A-Za-z_$][\\w$]*\\.\\*")
-                    && methodName.matches(ClassSelectionRules.wildcardToRegex(
-                    value.substring(0, value.length() - 2) + "*"))) {
-                return true;
-            }
-            String target = value.contains(".") ? className + "." + methodName : methodName;
-            return target.matches(ClassSelectionRules.wildcardToRegex(value));
-        }
-
-    }
 }

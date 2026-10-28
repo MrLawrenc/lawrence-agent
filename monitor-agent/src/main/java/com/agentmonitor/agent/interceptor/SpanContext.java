@@ -17,6 +17,7 @@ public final class SpanContext {
     public final String className;
     public final String methodName;
     public final String threadName;
+    public final long threadId=Thread.currentThread().getId();
     public final int depth;
     public final long startNanos;
     public final long startedAtEpochMillis;
@@ -72,6 +73,8 @@ public final class SpanContext {
         this.attributes = Map.copyOf(attributes == null ? Map.of() : attributes);
         this.traceSampling = traceSampling == null ? new TraceSamplingState(true, 0) : traceSampling;
         this.invocation = invocation;
+        this.traceSampling.registerRoot(spanId,depth);
         this.observerNanosAtStart = this.traceSampling.observerNanos();
+        AgentDiagnostics.enter(this);
     }
 }

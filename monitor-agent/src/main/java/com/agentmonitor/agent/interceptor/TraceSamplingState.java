@@ -30,6 +30,15 @@ public final class TraceSamplingState {
     private final List<SpanData> bufferedSpans;
     private long bufferedBytes;
     private long observerNanos;
+    private long completedSpans;
+    private String localRootId="",traceState="";
+    private boolean remoteNotSampled;
+    public void remoteNotSampled(boolean value){remoteNotSampled=value;}
+    public synchronized void registerRoot(String spanId,int depth){if(depth==0&&localRootId.isBlank())localRootId=spanId;}
+    public synchronized String localRootId(){return localRootId;}
+    public String traceState(){return traceState;}
+    public void traceState(String value){traceState=value;}
+    public synchronized long nextCompletedSpan(){return ++completedSpans;}
     private final int headRatePercent;
     private boolean containsError;
     private boolean overflowed;
@@ -70,6 +79,7 @@ public final class TraceSamplingState {
      * stack; this method never performs I/O.
      */
     synchronized List<SpanData> complete(SpanData span, boolean rootSpan) {
+        if(remoteNotSampled)return NO_SPANS;
         if (headSampled || span == null) return NO_SPANS;
         if (promoted) return List.of(annotate(span, "tail_overflow"));
         if (overflowed) return NO_SPANS;

@@ -13,6 +13,9 @@ public interface SpanExporter extends AutoCloseable {
 
     /** Strategy operation: exports one domain span without exposing transport details. */
     ExportResult export(SpanData span);
+    default java.util.List<ExportResult> exportBatch(java.util.List<SpanData> spans) {
+        return spans.stream().map(this::export).toList();
+    }
 
     /** Final upstream loss snapshot, delivered before leaf manifests are finalized. */
     default void captureQuality(ExporterStatistics statistics) { }

@@ -3,6 +3,7 @@ package com.agentmonitor.agent.interceptor;
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.StringJoiner;
 
 import com.agentmonitor.model.span.SpanAttribute;
 import com.agentmonitor.model.span.SpanKind;
@@ -21,27 +22,37 @@ public final class DependencySpanSupport {
         SpanKind kind = kindOf(arguments);
         if (kind == null || !enabled(kind)) return null;
         SpanContext parent = MethodSpanAdvice.SPAN_STACK.get().peek();
+        if (parent == null) parent = AsyncSpanSupport.current();
         // Servlet filter chains call doFilter recursively for every filter.  The outer
         // invocation is the request root; nested framework dispatch must reuse it rather
         // than creating a row of synthetic HTTP-server spans.
         if (kind == SpanKind.HTTP_SERVER && parent != null) return null;
+        Object request=servletRequest(arguments);
+        if(Boolean.TRUE.equals(invoke(request,"getAttribute","com.agentmonitor.request.started")))return null;
 
         InFlightSpans.Ticket invocation = InFlightSpans.enter(parent == null);
         if (invocation == null) return null;
         try {
-            String traceId = parent == null ? "trace-" + MethodSpanAdvice.nextId() : parent.traceId;
+            DistributedContext remote=parent==null?DistributedContext.parse(header(request,"traceparent"),header(request,"tracestate")):null;
+            String traceId = parent == null ? remote==null?MethodSpanAdvice.nextTraceId():remote.traceId() : parent.traceId;
             String spanId = MethodSpanAdvice.nextId();
             TraceSamplingState traceSampling = parent == null
-                    ? MethodSpanAdvice.newTraceSamplingState()
+                    ? remote==null?MethodSpanAdvice.newTraceSamplingState():new TraceSamplingState((remote.flags()&1)!=0,Long.MAX_VALUE,
+                            MethodSpanAdvice.TAIL_MAX_BUFFERED_SPANS,MethodSpanAdvice.TAIL_MAX_BUFFERED_BYTES,
+                            com.agentmonitor.model.config.MonitoringConfig.TailOverflowPolicy.DROP,(remote.flags()&1)!=0?100:0)
                     : parent.traceSampling;
-            Map<String, String> attributes = SpanPayloadLimits.attributes(ValueCapture.suppress(() -> attributes(kind, className, methodName, target, arguments)));
-            SpanContext span = new SpanContext(traceId, spanId, parent == null ? "" : parent.spanId,
+            if(remote!=null){traceSampling.traceState(remote.traceState());traceSampling.remoteNotSampled((remote.flags()&1)==0);}
+            Map<String, String> attributes = new LinkedHashMap<>(SpanPayloadLimits.attributes(ValueCapture.suppress(() -> attributes(kind, className, methodName, target, arguments))));
+            if(remote!=null)attributes.put("agent.remote_parent","true");
+            SpanContext span = new SpanContext(traceId, spanId, parent == null ? remote==null?"":remote.parentId() : parent.spanId,
                     dependencyClass(kind), dependencyMethod(kind, methodName, attributes), Thread.currentThread().getName(),
                     parent == null ? 0 : parent.depth + 1, System.nanoTime(), System.currentTimeMillis(), "", kind, attributes,
                     traceSampling, invocation);
             MethodSpanAdvice.SPAN_STACK.get().push(span);
             MethodSpanAdvice.recordEntryOverhead(span, observerStarted);
-            return new Context(span, new LinkedHashMap<>(attributes));
+            RequestMetrics.Ticket metric=RequestMetrics.begin();
+            try{request.getClass().getMethod("setAttribute",String.class,Object.class).invoke(request,"com.agentmonitor.request.started",Boolean.TRUE);}catch(Exception ignored){}
+            return new Context(span, new LinkedHashMap<>(attributes),metric,request);
         } catch (Throwable error) {
             invocation.close();
             throw error;
@@ -59,6 +70,7 @@ public final class DependencySpanSupport {
                 return null;
             });
             boolean statusFailure = error == null && isHttpServerFailure(context.attributes());
+            context.finishMetrics(arguments,error);
             String responseStatus = context.attributes().getOrDefault(SpanAttribute.HTTP_RESPONSE_STATUS_CODE,
                     context.attributes().getOrDefault(SpanAttribute.STATUS_CODE, "unknown"));
             if (statusFailure) context.attributes().put(SpanAttribute.ERROR_TYPE, responseStatus);
@@ -129,7 +141,8 @@ public final class DependencySpanSupport {
         String protocol = string(invoke(request, "getProtocol"));
         if (protocol.startsWith("HTTP/")) protocol = protocol.substring("HTTP/".length());
         if (!protocol.isBlank()) values.put(SpanAttribute.NETWORK_PROTOCOL_VERSION, protocol);
-        if (MethodSpanAdvice.CAPTURE_ARGUMENTS) {
+        if(MethodSpanAdvice.CAPTURE_ARGUMENTS&&!OverheadController.detailEnabled())values.put(SpanAttribute.CAPTURE_TRUNCATED,"httpParameters_adaptive");
+        if (MethodSpanAdvice.CAPTURE_ARGUMENTS && OverheadController.detailEnabled()) {
             // Do not call getParameter*, getInputStream, or getReader here.  Servlet containers
             // can parse form parameters from the body lazily, and doing so would consume a
             // one-shot request stream before application code can read it.  The query string is
@@ -198,6 +211,8 @@ public final class DependencySpanSupport {
     }
     private static String string(Object value) { return value == null ? "" : String.valueOf(value); }
     private static String routeTemplate(Object request) {
+        String spring=string(invoke(request,"getAttribute","org.springframework.web.servlet.HandlerMapping.bestMatchingPattern"));
+        if(!spring.isBlank())return spring;
         Object mapping = invoke(request, "getHttpServletMapping");
         String pattern = string(invoke(mapping, "getPattern"));
         if (!pattern.isBlank()) return pattern;
@@ -218,8 +233,48 @@ public final class DependencySpanSupport {
     }
     private static Object invoke(Object target, String name) { if (target == null) return null; try { Method method = target.getClass().getMethod(name); method.setAccessible(true); return method.invoke(target); } catch (Exception ignored) { return null; } }
     private static Object invoke(Object target, String name, String argument) { if (target == null) return null; try { Method method = target.getClass().getMethod(name, String.class); method.setAccessible(true); return method.invoke(target, argument); } catch (Exception ignored) { return null; } }
+    private static String header(Object request,String name){
+        Object all=invoke(request,"getHeaders",name);
+        if(all instanceof java.util.Enumeration<?> values){StringJoiner joined=new StringJoiner(",");int count=0,size=0;
+            while(values.hasMoreElements()){String value=string(values.nextElement());if(++count>32||(size+=value.length())>512)return "invalid";
+                if(name.equals("traceparent")&&count>1)return "invalid";joined.add(value);}
+            return joined.toString();
+        }
+        return string(invoke(request,"getHeader",name));
+    }
     private static final class HttpStatusException extends RuntimeException {
         private HttpStatusException(String status) { super("HTTP response status " + status); }
     }
-    public record Context(SpanContext span, Map<String, String> attributes) { }
+    public record Context(SpanContext span, Map<String, String> attributes, RequestMetrics.Ticket metric,Object request) {
+        public Context(SpanContext span,Map<String,String> attributes){this(span,attributes,null,null);}
+        private void finishMetrics(Object[] arguments,Throwable error){
+            Object response=null;for(Object argument:safeArguments(arguments))if(invoke(argument,"getStatus")!=null){response=argument;break;}
+            final Object finalResponse=response;
+            if(Boolean.TRUE.equals(invoke(request,"isAsyncStarted"))){
+                attributes.put("agent.http.duration_scope","servlet_dispatch_only_async");
+                try{
+                    Object async=invoke(request,"getAsyncContext");
+                    Class<?> listener=Class.forName(hasType(request.getClass(),"jakarta.servlet.ServletRequest")?"jakarta.servlet.AsyncListener":"javax.servlet.AsyncListener",false,request.getClass().getClassLoader());
+                    Object[] proxy=new Object[1];java.util.concurrent.atomic.AtomicBoolean failed=new java.util.concurrent.atomic.AtomicBoolean(error!=null);
+                    proxy[0]=java.lang.reflect.Proxy.newProxyInstance(listener.getClassLoader(),new Class<?>[]{listener},(p,m,a)->{
+                        try{switch(m.getName()){
+                            case "onError","onTimeout"->failed.set(true);
+                            case "onComplete"->finishMetric(finalResponse,failed.get());
+                            case "onStartAsync"->{Object next=invoke(a[0],"getAsyncContext");next.getClass().getMethod("addListener",listener).invoke(next,proxy[0]);}
+                            case "toString"->{return "AgentMonitorAsyncMetrics";}
+                            case "hashCode"->{return System.identityHashCode(p);}
+                            case "equals"->{return p==a[0];}
+                            default->{}
+                        }}catch(Throwable unavailable){/* Observer callbacks must not change Servlet lifecycle. */}return null;
+                    });
+                    async.getClass().getMethod("addListener",listener).invoke(async,proxy[0]);return;
+                }catch(Exception unavailable){attributes.put("agent.http.async_metrics","listener_unavailable_pending");return;}
+            }
+            finishMetric(response,error!=null);
+        }
+        private void finishMetric(Object response,boolean failed){
+            int status=-1;try{status=Integer.parseInt(string(invoke(response,"getStatus")));}catch(Exception ignored){}
+            RequestMetrics.finish(metric,attributes.get(SpanAttribute.HTTP_REQUEST_METHOD),routeTemplate(request),status,failed);
+        }
+    }
 }

@@ -1,0 +1,508 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-28T03:47:21.116105+00:00",
+  "title": "Design System: Agent Monitor",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Deep teal",
+        "tonalRamp": [
+          "oklch(15% 0.07838 181.93)",
+          "oklch(26% 0.07838 181.93)",
+          "oklch(38% 0.07838 181.93)",
+          "oklch(49% 0.07838 181.93)",
+          "oklch(61% 0.07838 181.93)",
+          "oklch(72% 0.07838 181.93)",
+          "oklch(84% 0.07838 181.93)",
+          "oklch(95% 0.07838 181.93)"
+        ]
+      },
+      "accent-soft": {
+        "role": "primary",
+        "displayName": "Soft teal",
+        "tonalRamp": [
+          "oklch(15% 0.01279 172.36)",
+          "oklch(26% 0.01279 172.36)",
+          "oklch(38% 0.01279 172.36)",
+          "oklch(49% 0.01279 172.36)",
+          "oklch(61% 0.01279 172.36)",
+          "oklch(72% 0.01279 172.36)",
+          "oklch(84% 0.01279 172.36)",
+          "oklch(95% 0.01279 172.36)"
+        ]
+      },
+      "accent-hover": {
+        "role": "primary",
+        "displayName": "Accent hover",
+        "tonalRamp": [
+          "oklch(15% 0.06980 181.19)",
+          "oklch(26% 0.06980 181.19)",
+          "oklch(38% 0.06980 181.19)",
+          "oklch(49% 0.06980 181.19)",
+          "oklch(61% 0.06980 181.19)",
+          "oklch(72% 0.06980 181.19)",
+          "oklch(84% 0.06980 181.19)",
+          "oklch(95% 0.06980 181.19)"
+        ]
+      },
+      "accent-pressed": {
+        "role": "primary",
+        "displayName": "Accent pressed",
+        "tonalRamp": [
+          "oklch(15% 0.06157 178.80)",
+          "oklch(26% 0.06157 178.80)",
+          "oklch(38% 0.06157 178.80)",
+          "oklch(49% 0.06157 178.80)",
+          "oklch(61% 0.06157 178.80)",
+          "oklch(72% 0.06157 178.80)",
+          "oklch(84% 0.06157 178.80)",
+          "oklch(95% 0.06157 178.80)"
+        ]
+      },
+      "accent-focus": {
+        "role": "primary",
+        "displayName": "Accent focus",
+        "tonalRamp": [
+          "oklch(15% 0.06054 180.32)",
+          "oklch(26% 0.06054 180.32)",
+          "oklch(38% 0.06054 180.32)",
+          "oklch(49% 0.06054 180.32)",
+          "oklch(61% 0.06054 180.32)",
+          "oklch(72% 0.06054 180.32)",
+          "oklch(84% 0.06054 180.32)",
+          "oklch(95% 0.06054 180.32)"
+        ]
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Cool canvas",
+        "tonalRamp": [
+          "oklch(15% 0.00171 247.84)",
+          "oklch(26% 0.00171 247.84)",
+          "oklch(38% 0.00171 247.84)",
+          "oklch(49% 0.00171 247.84)",
+          "oklch(61% 0.00171 247.84)",
+          "oklch(72% 0.00171 247.84)",
+          "oklch(84% 0.00171 247.84)",
+          "oklch(95% 0.00171 247.84)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "White workspace",
+        "tonalRamp": [
+          "oklch(15% 0.00000 0.00)",
+          "oklch(26% 0.00000 0.00)",
+          "oklch(38% 0.00000 0.00)",
+          "oklch(49% 0.00000 0.00)",
+          "oklch(61% 0.00000 0.00)",
+          "oklch(72% 0.00000 0.00)",
+          "oklch(84% 0.00000 0.00)",
+          "oklch(95% 0.00000 0.00)"
+        ]
+      },
+      "subtle": {
+        "role": "neutral",
+        "displayName": "Subtle gray",
+        "tonalRamp": [
+          "oklch(15% 0.00213 197.12)",
+          "oklch(26% 0.00213 197.12)",
+          "oklch(38% 0.00213 197.12)",
+          "oklch(49% 0.00213 197.12)",
+          "oklch(61% 0.00213 197.12)",
+          "oklch(72% 0.00213 197.12)",
+          "oklch(84% 0.00213 197.12)",
+          "oklch(95% 0.00213 197.12)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Quiet border",
+        "tonalRamp": [
+          "oklch(15% 0.00649 197.04)",
+          "oklch(26% 0.00649 197.04)",
+          "oklch(38% 0.00649 197.04)",
+          "oklch(49% 0.00649 197.04)",
+          "oklch(61% 0.00649 197.04)",
+          "oklch(72% 0.00649 197.04)",
+          "oklch(84% 0.00649 197.04)",
+          "oklch(95% 0.00649 197.04)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Dark ink",
+        "tonalRamp": [
+          "oklch(15% 0.01774 227.38)",
+          "oklch(26% 0.01774 227.38)",
+          "oklch(38% 0.01774 227.38)",
+          "oklch(49% 0.01774 227.38)",
+          "oklch(61% 0.01774 227.38)",
+          "oklch(72% 0.01774 227.38)",
+          "oklch(84% 0.01774 227.38)",
+          "oklch(95% 0.01774 227.38)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted ink",
+        "tonalRamp": [
+          "oklch(15% 0.01988 219.88)",
+          "oklch(26% 0.01988 219.88)",
+          "oklch(38% 0.01988 219.88)",
+          "oklch(49% 0.01988 219.88)",
+          "oklch(61% 0.01988 219.88)",
+          "oklch(72% 0.01988 219.88)",
+          "oklch(84% 0.01988 219.88)",
+          "oklch(95% 0.01988 219.88)"
+        ]
+      },
+      "navigation-surface": {
+        "role": "neutral",
+        "displayName": "Green-gray rail",
+        "tonalRamp": [
+          "oklch(15% 0.00446 179.73)",
+          "oklch(26% 0.00446 179.73)",
+          "oklch(38% 0.00446 179.73)",
+          "oklch(49% 0.00446 179.73)",
+          "oklch(61% 0.00446 179.73)",
+          "oklch(72% 0.00446 179.73)",
+          "oklch(84% 0.00446 179.73)",
+          "oklch(95% 0.00446 179.73)"
+        ]
+      },
+      "navigation-hover": {
+        "role": "neutral",
+        "displayName": "Navigation hover",
+        "tonalRamp": [
+          "oklch(15% 0.00943 171.78)",
+          "oklch(26% 0.00943 171.78)",
+          "oklch(38% 0.00943 171.78)",
+          "oklch(49% 0.00943 171.78)",
+          "oklch(61% 0.00943 171.78)",
+          "oklch(72% 0.00943 171.78)",
+          "oklch(84% 0.00943 171.78)",
+          "oklch(95% 0.00943 171.78)"
+        ]
+      },
+      "navigation-ink": {
+        "role": "neutral",
+        "displayName": "Navigation ink",
+        "tonalRamp": [
+          "oklch(15% 0.02218 200.57)",
+          "oklch(26% 0.02218 200.57)",
+          "oklch(38% 0.02218 200.57)",
+          "oklch(49% 0.02218 200.57)",
+          "oklch(61% 0.02218 200.57)",
+          "oklch(72% 0.02218 200.57)",
+          "oklch(84% 0.02218 200.57)",
+          "oklch(95% 0.02218 200.57)"
+        ]
+      },
+      "hover-border": {
+        "role": "neutral",
+        "displayName": "Hover border",
+        "tonalRamp": [
+          "oklch(15% 0.03266 257.25)",
+          "oklch(26% 0.03266 257.25)",
+          "oklch(38% 0.03266 257.25)",
+          "oklch(49% 0.03266 257.25)",
+          "oklch(61% 0.03266 257.25)",
+          "oklch(72% 0.03266 257.25)",
+          "oklch(84% 0.03266 257.25)",
+          "oklch(95% 0.03266 257.25)"
+        ]
+      },
+      "pressed-surface": {
+        "role": "neutral",
+        "displayName": "Pressed surface",
+        "tonalRamp": [
+          "oklch(15% 0.01204 259.82)",
+          "oklch(26% 0.01204 259.82)",
+          "oklch(38% 0.01204 259.82)",
+          "oklch(49% 0.01204 259.82)",
+          "oklch(61% 0.01204 259.82)",
+          "oklch(72% 0.01204 259.82)",
+          "oklch(84% 0.01204 259.82)",
+          "oklch(95% 0.01204 259.82)"
+        ]
+      },
+      "positive": {
+        "role": "semantic",
+        "displayName": "Positive",
+        "tonalRamp": [
+          "oklch(15% 0.09817 156.62)",
+          "oklch(26% 0.09817 156.62)",
+          "oklch(38% 0.09817 156.62)",
+          "oklch(49% 0.09817 156.62)",
+          "oklch(61% 0.09817 156.62)",
+          "oklch(72% 0.09817 156.62)",
+          "oklch(84% 0.09817 156.62)",
+          "oklch(95% 0.09817 156.62)"
+        ]
+      },
+      "positive-soft": {
+        "role": "semantic",
+        "displayName": "Positive soft",
+        "tonalRamp": [
+          "oklch(15% 0.01730 159.12)",
+          "oklch(26% 0.01730 159.12)",
+          "oklch(38% 0.01730 159.12)",
+          "oklch(49% 0.01730 159.12)",
+          "oklch(61% 0.01730 159.12)",
+          "oklch(72% 0.01730 159.12)",
+          "oklch(84% 0.01730 159.12)",
+          "oklch(95% 0.01730 159.12)"
+        ]
+      },
+      "warning": {
+        "role": "semantic",
+        "displayName": "Warning",
+        "tonalRamp": [
+          "oklch(15% 0.10038 69.55)",
+          "oklch(26% 0.10038 69.55)",
+          "oklch(38% 0.10038 69.55)",
+          "oklch(49% 0.10038 69.55)",
+          "oklch(61% 0.10038 69.55)",
+          "oklch(72% 0.10038 69.55)",
+          "oklch(84% 0.10038 69.55)",
+          "oklch(95% 0.10038 69.55)"
+        ]
+      },
+      "warning-soft": {
+        "role": "semantic",
+        "displayName": "Warning soft",
+        "tonalRamp": [
+          "oklch(15% 0.03329 81.99)",
+          "oklch(26% 0.03329 81.99)",
+          "oklch(38% 0.03329 81.99)",
+          "oklch(49% 0.03329 81.99)",
+          "oklch(61% 0.03329 81.99)",
+          "oklch(72% 0.03329 81.99)",
+          "oklch(84% 0.03329 81.99)",
+          "oklch(95% 0.03329 81.99)"
+        ]
+      },
+      "danger": {
+        "role": "semantic",
+        "displayName": "Danger",
+        "tonalRamp": [
+          "oklch(15% 0.15893 22.28)",
+          "oklch(26% 0.15893 22.28)",
+          "oklch(38% 0.15893 22.28)",
+          "oklch(49% 0.15893 22.28)",
+          "oklch(61% 0.15893 22.28)",
+          "oklch(72% 0.15893 22.28)",
+          "oklch(84% 0.15893 22.28)",
+          "oklch(95% 0.15893 22.28)"
+        ]
+      },
+      "danger-soft": {
+        "role": "semantic",
+        "displayName": "Danger soft",
+        "tonalRamp": [
+          "oklch(15% 0.01403 17.40)",
+          "oklch(26% 0.01403 17.40)",
+          "oklch(38% 0.01403 17.40)",
+          "oklch(49% 0.01403 17.40)",
+          "oklch(61% 0.01403 17.40)",
+          "oklch(72% 0.01403 17.40)",
+          "oklch(84% 0.01403 17.40)",
+          "oklch(95% 0.01403 17.40)"
+        ]
+      },
+      "code-surface": {
+        "role": "neutral",
+        "displayName": "Code surface",
+        "tonalRamp": [
+          "oklch(15% 0.03660 260.05)",
+          "oklch(26% 0.03660 260.05)",
+          "oklch(38% 0.03660 260.05)",
+          "oklch(49% 0.03660 260.05)",
+          "oklch(61% 0.03660 260.05)",
+          "oklch(72% 0.03660 260.05)",
+          "oklch(84% 0.03660 260.05)",
+          "oklch(95% 0.03660 260.05)"
+        ]
+      },
+      "code-text": {
+        "role": "neutral",
+        "displayName": "Code text",
+        "tonalRamp": [
+          "oklch(15% 0.02308 258.36)",
+          "oklch(26% 0.02308 258.36)",
+          "oklch(38% 0.02308 258.36)",
+          "oklch(49% 0.02308 258.36)",
+          "oklch(61% 0.02308 258.36)",
+          "oklch(72% 0.02308 258.36)",
+          "oklch(84% 0.02308 258.36)",
+          "oklch(95% 0.02308 258.36)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Process-selection heading."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Workbench page heading."
+      },
+      "metric": {
+        "displayName": "Metric",
+        "purpose": "JVM overview value."
+      },
+      "brand": {
+        "displayName": "Brand",
+        "purpose": "Application identity."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Section heading."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Native labels, navigation, and table content."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Buttons and supporting status."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Column headers, counts, and compact metrics."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "YAML and logs; raw detail views may use Consolas/monospace fallback."
+      }
+    },
+    "shadows": [
+      {
+        "name": "transient-loading",
+        "value": "dropshadow(gaussian, rgba(29,41,61,0.12), 24, 0, 0, 8)",
+        "purpose": "Existing JavaFX loading overlay exception; not a general workspace/card elevation token."
+      }
+    ],
+    "motion": [],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Primary action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Documentation translation of the native capture/apply action; bold is a component override.",
+      "html": "<button class=\"ds-primary\">开始监控</button>",
+      "css": ".ds-primary{font-family:system-ui,sans-serif;font-size:12px;border:1px solid #DAE0E0;border-radius:5px;padding:7px 12px;color:#202B30;background:#FFFFFF;cursor:pointer;background:#176B60;border-color:#176B60;color:#FFFFFF;font-weight:700;padding:9px 16px}.ds-primary:hover{background:#10594F;border-color:#10594F}.ds-primary:active{background:#0C493F}.ds-primary:focus-visible{outline:1px solid #104B42;outline-offset:2px;}.ds-primary:disabled{opacity:.43;cursor:default}"
+    },
+    {
+      "name": "Secondary action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Native outlined page actions such as refresh, import, or return.",
+      "html": "<button class=\"ds-secondary\">刷新范围</button>",
+      "css": ".ds-secondary{font-family:system-ui,sans-serif;font-size:12px;border:1px solid #DAE0E0;border-radius:5px;padding:7px 12px;color:#202B30;background:#FFFFFF;cursor:pointer;}.ds-secondary:hover{background:#F4F6F6;border-color:#A6B4C8}.ds-secondary:active{background:#E8EDF5}.ds-secondary:focus-visible{border-color:#176B60;outline:none}.ds-secondary:disabled{opacity:.43;cursor:default}"
+    },
+    {
+      "name": "Stop action",
+      "kind": "button",
+      "refersTo": "button-stop",
+      "description": "Visible stop control with semantic red text and border.",
+      "html": "<button class=\"ds-stop\">停止监控</button>",
+      "css": ".ds-stop{font-family:system-ui,sans-serif;font-size:12px;border:1px solid #DAE0E0;border-radius:5px;padding:7px 12px;color:#202B30;background:#FFFFFF;cursor:pointer;background:#FFF2F2;color:#A92E35;border-color:#EDBEC2;padding:9px 16px;font-weight:700}.ds-stop:hover{background:#FCE2E4;border-color:#D98991}.ds-stop:active{background:#FFF2F2}.ds-stop:focus-visible{border-color:#176B60;outline:none}.ds-stop:disabled{opacity:.43;cursor:default}"
+    },
+    {
+      "name": "Search input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Native search field with border-based focus, a labeled clear action when nonempty, Escape to clear, and Command/Ctrl + F for the active page search. HTML shows the empty state only.",
+      "html": "<input class=\"ds-input\" aria-label=\"查找包名\" placeholder=\"查找包名\">",
+      "css": ".ds-input{font-family:system-ui,sans-serif;font-size:13px;color:#202B30;background:#FFFFFF;border:1px solid #DAE0E0;border-radius:5px;padding:8px 10px;width:230px}.ds-input::placeholder{color:#59686D}.ds-input:hover{border-color:#A6B4C8}.ds-input:focus-visible{border-color:#176B60;outline:none}.ds-input::selection{background:#D5EAE3;color:#202B30}"
+    },
+    {
+      "name": "Workbench navigation",
+      "kind": "nav",
+      "refersTo": "navigation-item",
+      "description": "Persistent rail: selected page is white with bold teal text; the specimen does not implement native page switching.",
+      "html": "<nav class=\"ds-navigation\" aria-label=\"工作台\"><button class=\"ds-nav-item ds-nav-selected\" aria-current=\"page\"><svg class=\"ds-nav-icon\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M2 2h4v4H2zM10 2h4v4h-4zM2 10h4v4H2zM10 10h4v4h-4z\"/></svg>采集配置</button><button class=\"ds-nav-item\">调用链</button></nav>",
+      "css": ".ds-navigation{background:#EDF1F0;width:152px;padding:24px 12px 16px;display:flex;flex-direction:column;gap:5px}.ds-nav-item{font-family:system-ui,sans-serif;font-size:13px;display:flex;align-items:center;gap:10px;text-align:left;background:transparent;border:1px solid transparent;border-radius:5px;padding:12px 14px;color:#485A5B;cursor:pointer}.ds-nav-item:hover{background:#E1E9E6}.ds-nav-item:focus-visible{border-color:#176B60;outline:none}.ds-nav-selected,.ds-nav-selected:hover{background:#FFFFFF;color:#176B60;font-weight:700}.ds-nav-icon{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}"
+    },
+    {
+      "name": "Connected status",
+      "kind": "chip",
+      "refersTo": "status-connected",
+      "description": "Noninteractive native state label; status remains explicit in text.",
+      "html": "<span class=\"ds-connected\">状态: 已连接</span>",
+      "css": ".ds-connected{display:inline-block;font-family:system-ui,sans-serif;font-size:12px;background:#EAF7EF;color:#17663F;border-radius:6px;padding:5px 9px}"
+    },
+    {
+      "name": "Process row",
+      "kind": "card",
+      "refersTo": "process-card",
+      "description": "Selectable process card within the embedded native target selector.",
+      "html": "<button class=\"ds-process\"><span class=\"ds-process-title\">OrderApplication</span><span class=\"ds-process-detail\">PID 24680 · Java 17</span></button>",
+      "css": ".ds-process{font-family:system-ui,sans-serif;text-align:left;display:flex;flex-direction:column;gap:4px;width:280px;background:#FFFFFF;border:1px solid #DAE0E0;border-radius:8px;padding:12px;cursor:pointer}.ds-process-title{font-size:13px;font-weight:700;color:#202B30}.ds-process-detail{font-size:11px;color:#59686D}.ds-process:hover{border-color:#A6B4C8}.ds-process:active{background:#E8F3EF;border-color:#176B60}.ds-process:focus-visible{background:#E8F3EF;border-color:#176B60;outline:none}"
+    },
+    {
+      "name": "YAML editor",
+      "kind": "custom",
+      "refersTo": "code-editor",
+      "description": "Dark native code surface inside the light workbench, with explicit clean, unapplied, and applied status beside its tools; application is disabled while clean. Browser font fallback is only for the specimen.",
+      "html": "<textarea class=\"ds-code\" aria-label=\"采集 YAML\" rows=\"6\" spellcheck=\"false\">version: 2\nscope:\n  includePackages:\n    - com.example.orders\n</textarea>",
+      "css": ".ds-code{font-family:Menlo,Consolas,monospace;font-size:12px;color:#DCE6F5;background:#202B3D;border:1px solid transparent;border-radius:8px;padding:14px;width:280px;resize:vertical}.ds-code:focus-visible{outline:1px solid #176B60;outline-offset:1px}.ds-code::selection{background:#385682;color:#FFFFFF}"
+    },
+    {
+      "name": "Evidence rows",
+      "kind": "custom",
+      "refersTo": "data-row",
+      "description": "Table density and selected evidence styling; read-only documentation data, not a live capture.",
+      "html": "<table class=\"ds-table\"><thead><tr><th>类</th><th>生效原因</th></tr></thead><tbody><tr tabindex=\"0\"><td>OrderController</td><td>随包纳入</td></tr><tr class=\"ds-row-selected\" tabindex=\"0\"><td>OrderService</td><td>随包纳入</td></tr></tbody></table>",
+      "css": ".ds-table{border-collapse:collapse;font-family:system-ui,sans-serif;font-size:13px;color:#202B30;background:#FFFFFF;width:340px}.ds-table th{font-size:11px;font-weight:700;color:#59686D;background:#F4F6F6;text-align:left;padding:9px 8px;border-bottom:1px solid #DAE0E0}.ds-table tbody tr{height:38px}.ds-table td{padding:8px}.ds-table tbody tr:nth-child(even){background:#FAFBFD}.ds-table tbody tr:hover{background:#F0F5F3}.ds-table tbody tr.ds-row-selected{background:#E6F1ED}.ds-table tbody tr:focus-visible{outline:1px solid #176B60;outline-offset:-1px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Desktop investigation workbench",
+    "overview": "Agent Monitor uses a continuous white evidence workspace, a pale green-gray navigation rail, and deep teal for actions and selection. System typography supports Chinese labels alongside JVM identifiers. The visual character is quiet, precise, and compact enough for sustained investigation.\n\nThe workbench keeps navigation, target identity, and capture controls stable while the evidence changes. Flat surfaces and restrained separators provide hierarchy; imagery and decorative animation are absent. This records the implemented native desktop system, not a web or mobile theme.",
+    "keyCharacteristics": [
+      "Persistent task navigation with retained page state.",
+      "Neutral evidence surfaces with teal interaction states.",
+      "Native controls, visible keyboard focus, and compact data typography.",
+      "Inline evidence, editors, and results within the main workspace."
+    ],
+    "rules": [
+      {
+        "name": "The State Color Rule",
+        "body": "Use teal for actions and selection; use green, amber, and red for runtime meaning. Keep a text label with every status.",
+        "section": "colors"
+      },
+      {
+        "name": "The Evidence Type Rule",
+        "body": "Use system type for navigation and tables, and monospace for code and raw evidence. Keep units and measurement meaning visible.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Workspace Rule",
+        "body": "Keep the evidence workspace flat. Separate regions with spacing, tonal surfaces, or a single border; do not recreate the former nested rounded panel grid.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do retain the fixed navigation rail and persistent target and capture controls across workbench pages.",
+      "Do use the documented semantic colors and native System typography for new desktop controls.",
+      "Do preserve page search, selection, and unapplied editor drafts when switching pages.",
+      "Do retain visible focus, text labels, and keyboard access alongside icon affordances.",
+      "Do check layouts at the supported compact and wide desktop sizes with long JVM names and empty evidence.",
+      "Do keep global capture totals, the browsed package, filtered results, and actual enhancement results visibly distinct."
+    ],
+    "donts": [
+      "Don't replace the native workbench with a web/mobile layout or add an invented branding metaphor.",
+      "Don't use decorative imagery, animation, gradients, or nested elevated cards in the evidence workspace.",
+      "Don't move routine call details, exclusion editing, or diagnostic results into additional windows.",
+      "Don't treat generated tonal ramps or HTML specimens as additional production tokens or executable JavaFX controls.",
+      "Don't present illustrative preview data as a live capture or a rule preview as actual enhancement results."
+    ]
+  }
+}

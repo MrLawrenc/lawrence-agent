@@ -13,6 +13,8 @@ public final class PackagePatternMatcher {
     public static boolean matches(String pattern, String packageName) {
         if (pattern == null || pattern.isBlank() || packageName == null || packageName.isBlank()) return false;
         if (!hasWildcard(pattern)) {
+            while (pattern.endsWith(".")) pattern = pattern.substring(0,pattern.length()-1);
+            if (pattern.isEmpty()) return false;
             return packageName.equals(pattern) || packageName.startsWith(pattern + '.');
         }
         String regex = toRegex(pattern);

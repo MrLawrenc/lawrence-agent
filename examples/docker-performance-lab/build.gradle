@@ -1,0 +1,15 @@
+plugins { id 'application' }
+
+repositories { mavenCentral() }
+java { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+dependencies {
+    implementation platform('org.springframework.boot:spring-boot-dependencies:3.5.16')
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'org.postgresql:postgresql:42.7.11'
+    implementation 'redis.clients:jedis:5.2.0'
+    implementation 'com.rabbitmq:amqp-client:5.23.0'
+    implementation 'org.apache.httpcomponents.client5:httpclient5:5.5.2'
+}
+application { mainClass = 'dev.perflab.PerformanceLabApplication' }
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }

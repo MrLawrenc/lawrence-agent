@@ -21,7 +21,20 @@ public record MonitoringConfig(
         Output output,
         Resource resource,
         Dependencies dependencies,
-        Analysis analysis) {
+        Analysis analysis,
+        Diagnostics diagnostics,
+        Overhead overhead,
+        Experiment experiment) {
+
+    public MonitoringConfig(int schemaVersion, Scope scope, Sampling sampling, Output output,
+                            Resource resource, Dependencies dependencies, Analysis analysis, Diagnostics diagnostics) {
+        this(schemaVersion, scope, sampling, output, resource, dependencies, analysis, diagnostics, Overhead.defaults(), Experiment.defaults());
+    }
+
+    public MonitoringConfig(int schemaVersion, Scope scope, Sampling sampling, Output output,
+                            Resource resource, Dependencies dependencies, Analysis analysis) {
+        this(schemaVersion, scope, sampling, output, resource, dependencies, analysis, Diagnostics.defaults());
+    }
 
     public static final int CURRENT_SCHEMA_VERSION = 2;
     public static final int DEFAULT_SAMPLING_RATE_PERCENT = 10;
@@ -51,6 +64,9 @@ public record MonitoringConfig(
         resource = resource == null ? Resource.defaults() : resource;
         dependencies = dependencies == null ? Dependencies.defaults() : dependencies;
         analysis = analysis == null ? Analysis.defaults() : analysis;
+        diagnostics = diagnostics == null ? Diagnostics.defaults() : diagnostics;
+        overhead = overhead == null ? Overhead.defaults() : overhead;
+        experiment = experiment == null ? Experiment.defaults() : experiment;
     }
 
     public static MonitoringConfig defaults() {
@@ -59,7 +75,46 @@ public record MonitoringConfig(
     }
 
     public MonitoringConfig withScope(Scope replacement) {
-        return new MonitoringConfig(schemaVersion, replacement, sampling, output, resource, dependencies, analysis);
+        return new MonitoringConfig(schemaVersion, replacement, sampling, output, resource, dependencies, analysis, diagnostics, overhead, experiment);
+    }
+
+    /** Soft observer budget; byte admission is a hard estimated-resident-payload bound. */
+    public record Overhead(boolean enabled, long queueMaxBytes, int highWatermarkPercent, int lowWatermarkPercent,
+                           int minimumSamplingRatePercent, long adviceBudgetNanosPerSecond, long recoveryMillis) {
+        public Overhead {
+            if(queueMaxBytes<65536 || queueMaxBytes>256L*1024*1024 || lowWatermarkPercent<1 || highWatermarkPercent>95
+                    || lowWatermarkPercent>=highWatermarkPercent || minimumSamplingRatePercent<0 || minimumSamplingRatePercent>100
+                    || adviceBudgetNanosPerSecond<100000 || adviceBudgetNanosPerSecond>1000000000L || recoveryMillis<1000 || recoveryMillis>300000)
+                throw new IllegalArgumentException("overhead budget/watermarks invalid");
+        }
+        public static Overhead defaults(){return new Overhead(true,16L*1024*1024,75,35,1,50_000_000L,10_000);}
+    }
+
+    /** User-declared experiment context; matching declarations do not prove actual workload equivalence. */
+    public record Experiment(String workloadId,String datasetId,String loadProfile,String warmupId,String buildId) {
+        public Experiment { workloadId=normalizeOptional(workloadId);datasetId=normalizeOptional(datasetId);loadProfile=normalizeOptional(loadProfile);warmupId=normalizeOptional(warmupId);buildId=normalizeOptional(buildId); }
+        public static Experiment defaults(){return new Experiment("","","","","");}
+    }
+
+    /** Bounded evidence capture. Expensive heap diagnostics remain explicit actions. */
+    public record Diagnostics(boolean enabled, int intervalMs, int threadIntervalMs, int maxSamples,
+                              boolean jfr, boolean exceptionEvents, Trigger trigger) {
+        public Diagnostics {
+            if (intervalMs < 500 || intervalMs > 60_000) throw new IllegalArgumentException("diagnostics.intervalMs: 500–60000");
+            if (threadIntervalMs < 1000 || threadIntervalMs > 300_000) throw new IllegalArgumentException("diagnostics.threadIntervalMs: 1000–300000");
+            if (maxSamples < 2 || maxSamples > 7200) throw new IllegalArgumentException("diagnostics.maxSamples: 2–7200");
+            trigger = trigger == null ? Trigger.defaults() : trigger;
+        }
+        public static Diagnostics defaults() { return new Diagnostics(true, 1000, 5000, 3600, false, false, Trigger.defaults()); }
+    }
+    public record Trigger(boolean enabled, int cpuPercent, int heapPercent, int blockedThreads,
+                          int consecutiveSamples, long slowCallMs) {
+        public Trigger {
+            if (cpuPercent < 1 || cpuPercent > 100 || heapPercent < 1 || heapPercent > 100
+                    || blockedThreads < 1 || consecutiveSamples < 1 || consecutiveSamples > 120 || slowCallMs < 1)
+                throw new IllegalArgumentException("diagnostics.trigger 阈值无效");
+        }
+        public static Trigger defaults() { return new Trigger(false, 85, 90, 20, 3, 3000); }
     }
 
     public List<String> validationErrors() {
@@ -67,9 +122,10 @@ public record MonitoringConfig(
         if (scope.includePackages().isEmpty() && scope.includeClasses().isEmpty()) {
             errors.add("scope.includePackages 与 scope.includeClasses 至少配置一项");
         }
-        if (!output.exporters().contains(ExporterType.NETTY)) {
-            errors.add("output.exporters 必须包含 netty（实时数据和 STOP 控制通道）");
+        if (!output.exporters().contains(ExporterType.NETTY) && !output.exporters().contains(ExporterType.OTLP)) {
+            errors.add("output.exporters 必须包含 otlp 或 netty（实时遥测数据）");
         }
+        if (scope.includePackages().stream().anyMatch(p -> p.contains("*"))) errors.add("scope.includePackages 使用包名前缀，不支持通配符；pkg: 排除规则支持通配符");
         for (String condition : scope.excludeConditions()) {
             if (!(condition.startsWith("pkg:") || condition.startsWith("cls:"))) {
                 errors.add("scope.excludeConditions 必须以 pkg: 或 cls: 开头: " + condition);
@@ -173,8 +229,18 @@ public record MonitoringConfig(
     }
 
     public record Output(String sessionRootDir, List<ExporterType> exporters, Capture capture,
-                         SpanFiles spanFiles, Retention retention) {
+                         SpanFiles spanFiles, Retention retention, String otlpForwardEndpoint) {
+        public Output(String root, List<ExporterType> exporters, Capture capture, SpanFiles files, Retention retention) {
+            this(root, exporters, capture, files, retention, "");
+        }
         public Output {
+            otlpForwardEndpoint = otlpForwardEndpoint == null ? "" : otlpForwardEndpoint.trim();
+            if (!otlpForwardEndpoint.isEmpty()) {
+                java.net.URI endpoint = java.net.URI.create(otlpForwardEndpoint);
+                if (!("http".equals(endpoint.getScheme()) || "https".equals(endpoint.getScheme())) || endpoint.getHost() == null
+                        || endpoint.getUserInfo() != null || endpoint.getFragment() != null)
+                    throw new IllegalArgumentException("output.otlpForwardEndpoint 必须为 HTTP(S) traces endpoint");
+            }
             sessionRootDir = sessionRootDir == null || sessionRootDir.isBlank()
                     ? DEFAULT_SESSION_ROOT_DIRECTORY : sessionRootDir.trim();
             exporters = normalizeExporters(exporters);
@@ -184,7 +250,7 @@ public record MonitoringConfig(
         }
 
         public static Output defaults() {
-            return new Output(DEFAULT_SESSION_ROOT_DIRECTORY, List.of(ExporterType.NETTY, ExporterType.FILE),
+            return new Output(DEFAULT_SESSION_ROOT_DIRECTORY, List.of(ExporterType.OTLP, ExporterType.FILE),
                     Capture.defaults(), SpanFiles.defaults(), Retention.defaults());
         }
     }
@@ -234,9 +300,10 @@ public record MonitoringConfig(
         }
     }
 
-    public record Dependencies(boolean jdbc, boolean http) {
+    public record Dependencies(boolean jdbc, boolean http, boolean redis, boolean messaging) {
+        public Dependencies(boolean jdbc,boolean http){this(jdbc,http,true,true);}
         public static Dependencies defaults() {
-            return new Dependencies(true, true);
+            return new Dependencies(true, true,true,true);
         }
     }
 
@@ -275,7 +342,7 @@ public record MonitoringConfig(
     }
 
     private static List<ExporterType> normalizeExporters(List<ExporterType> values) {
-        if (values == null || values.isEmpty()) return List.of(ExporterType.NETTY, ExporterType.FILE);
+        if (values == null || values.isEmpty()) return List.of(ExporterType.OTLP, ExporterType.FILE);
         LinkedHashSet<ExporterType> normalized = new LinkedHashSet<>();
         for (ExporterType exporter : values) normalized.add(Objects.requireNonNull(exporter, "exporter"));
         return List.copyOf(normalized);

@@ -2,8 +2,8 @@ package com.agentmonitor.app.ui;
 
 import java.util.function.Consumer;
 
-import com.agentmonitor.app.model.JvmProcess;
-import com.agentmonitor.app.service.JvmService;
+import com.agentmonitor.model.jvm.JvmProcess;
+import com.agentmonitor.core.service.JvmService;
 
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -36,12 +36,12 @@ public class JvmListPane extends VBox {
         VBox.setVgrow(table, Priority.ALWAYS);
 
         TableColumn<JvmProcess, String> pidCol = new TableColumn<>("PID");
-        pidCol.setCellValueFactory(c -> c.getValue().pidProperty());
+        pidCol.setCellValueFactory(c -> new javafx.beans.property.ReadOnlyStringWrapper(c.getValue().getPid()));
         pidCol.setPrefWidth(60);
         pidCol.setResizable(false);
 
         TableColumn<JvmProcess, String> nameCol = new TableColumn<>("主类 / 名称");
-        nameCol.setCellValueFactory(c -> c.getValue().displayNameProperty());
+        nameCol.setCellValueFactory(c -> new javafx.beans.property.ReadOnlyStringWrapper(c.getValue().getDisplayName()));
         nameCol.setPrefWidth(200);
 
         table.getColumns().addAll(pidCol, nameCol);

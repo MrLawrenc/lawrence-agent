@@ -6,12 +6,8 @@ plugins {
 }
 
 dependencies {
-    implementation project(':monitor-model')
+    implementation project(':monitor-core')
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
-    implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.16.1'
-    implementation 'io.netty:netty-codec:4.1.135.Final'
-    implementation 'io.netty:netty-handler:4.1.135.Final'
-    implementation 'io.netty:netty-transport:4.1.135.Final'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
 }
 
@@ -25,7 +21,7 @@ javafx {
 }
 
 application {
-    mainClass = 'com.agentmonitor.app.MainApp'
+    mainClass = 'com.agentmonitor.app.Launcher'
     applicationDefaultJvmArgs = [
         "-Xdock:icon=${projectDir}/src/main/resources/com/agentmonitor/app/icon.icns",
         '-Xdock:name=Agent Monitor',
@@ -47,7 +43,7 @@ shadowJar {
     archiveClassifier.set('all')
     dependsOn processResources
     manifest {
-        attributes('Main-Class': 'com.agentmonitor.app.MainApp')
+        attributes('Main-Class': 'com.agentmonitor.app.Launcher')
     }
     mergeServiceFiles()
 }
@@ -95,7 +91,7 @@ tasks.register('packageMacApp', Exec) {
                 '--module-path', modulePath,
                 // The packaged runtime is trimmed by jpackage.  Besides JavaFX and Attach,
                 // Netty needs java.logging and the metrics client needs the local JMX/RMI stack.
-                '--add-modules', 'javafx.controls,javafx.fxml,javafx.graphics,javafx.base,jdk.attach,java.logging,java.management,java.management.rmi,java.naming,java.rmi,jdk.management.agent',
+                '--add-modules', 'javafx.controls,javafx.fxml,javafx.graphics,javafx.base,jdk.attach,java.net.http,java.logging,java.management,java.management.rmi,java.naming,java.rmi,jdk.management.agent,jdk.management,jdk.jfr,jdk.management.jfr',
                 '--java-options', '--add-modules=jdk.attach',
                 '--java-options', '--add-opens=java.base/java.lang=ALL-UNNAMED'
     }
@@ -137,7 +133,7 @@ tasks.register('packageWindowsApp', Exec) {
                 '--icon', windowsIcon.asFile.absolutePath,
                 '--module-path', modulePath,
                 // Keep the Windows runtime aligned with macOS so monitoring can start there too.
-                '--add-modules', 'javafx.controls,javafx.fxml,javafx.graphics,javafx.base,jdk.attach,java.logging,java.management,java.management.rmi,java.naming,java.rmi,jdk.management.agent',
+                '--add-modules', 'javafx.controls,javafx.fxml,javafx.graphics,javafx.base,jdk.attach,java.net.http,java.logging,java.management,java.management.rmi,java.naming,java.rmi,jdk.management.agent,jdk.management,jdk.jfr,jdk.management.jfr',
                 '--java-options', '--add-modules=jdk.attach',
                 '--java-options', '--add-opens=java.base/java.lang=ALL-UNNAMED'
     }
@@ -155,9 +151,8 @@ sourceSets {
     }
 }
 configurations.uiPreviewImplementation.extendsFrom(configurations.implementation)
-def previewControls = ['ui/UiIcons', 'ui/AppIcons', 'ui/JvmSelectDialog', 'ui/ClassSelectionPane',
-                       'ui/CallTreePane', 'ui/JvmMetricsPane', 'model/JvmProcess', 'model/CallNode',
-                       'model/JvmMetrics']
+def previewControls = ['MainApp', 'controller/MainController', 'ui/LogViewerDialog', 'ui/UiIcons', 'ui/AppIcons', 'ui/SearchBox', 'ui/JvmSelectDialog', 'ui/ClassSelectionPane', 'ui/ClassSelectionRules', 'ui/AdvancedConfigPane', 'ui/CallDetailPane',
+                       'ui/WorkbenchPane', 'ui/DiagnosticsPane', 'ui/DiagnosticsWindow', 'util/SessionArtifactOpener', 'ui/WorkspaceActionBar', 'ui/CallTreePane', 'ui/JvmMetricsPane', 'model/CallNode']
 tasks.named('compileUiPreviewJava', JavaCompile) {
     source = files(previewControls.collect { "src/main/java/com/agentmonitor/app/${it}.java" },
                    fileTree("${rootDir}/scripts/ui-preview") { include '**/*.java' })
@@ -175,29 +170,17 @@ tasks.register('uiPreview', JavaExec) {
     }
 }
 
-// Independent Agent protocol check and full desktop-service pipeline check against explicit PIDs.
-sourceSets {
-    liveSmoke { java.srcDir "${rootDir}/scripts/live-smoke" }
-}
-tasks.register('desktopSmoke', JavaExec) {
+// Renders the production diagnostic workbench against evidence from the real-JVM integration test.
+sourceSets { diagnosticsPreview { java.srcDir "${rootDir}/scripts/diagnostics-preview"; compileClasspath += sourceSets.main.output } }
+configurations.diagnosticsPreviewImplementation.extendsFrom(configurations.implementation)
+tasks.register('diagnosticsPreview', JavaExec) {
     group = 'verification'
-    description = 'Verifies the production desktop attach, report, and replay pipeline against an explicit JVM PID.'
-    dependsOn tasks.named('liveSmokeClasses'), tasks.named('classes')
-    classpath = sourceSets.liveSmoke.runtimeClasspath + sourceSets.main.runtimeClasspath
-    mainClass = 'com.agentmonitor.tools.DesktopSmoke'
-    jvmArgs '--add-modules', 'jdk.attach'
-}
-tasks.named('compileLiveSmokeJava', JavaCompile) {
-    classpath += sourceSets.main.output
-    dependsOn tasks.named('classes')
-}
-configurations.liveSmokeImplementation.extendsFrom(configurations.implementation)
-tasks.register('attachSmoke', JavaExec) {
-    group = 'verification'
-    description = 'Runs a bounded, exact-class attach check against an explicitly supplied real JVM PID.'
-    dependsOn tasks.named('liveSmokeClasses'), project(':monitor-agent').tasks.named('agentJar')
-    classpath = sourceSets.liveSmoke.runtimeClasspath
-    mainClass = 'com.agentmonitor.tools.AttachSmoke'
-    jvmArgs '--add-modules', 'jdk.attach'
-    systemProperty 'agent.monitor.smoke.jar', project(':monitor-agent').layout.buildDirectory.file('libs/monitor-agent.jar').get().asFile.absolutePath
+    dependsOn tasks.named('classes'), tasks.named('diagnosticsPreviewClasses')
+    classpath = sourceSets.diagnosticsPreview.runtimeClasspath + sourceSets.main.output
+    mainClass = 'com.agentmonitor.app.ui.DiagnosticsPreview'
+    doFirst {
+        jvmArgs '--module-path', configurations.diagnosticsPreviewRuntimeClasspath.files
+                .findAll { it.name.startsWith('javafx-') }.collect { it.absolutePath }.join(File.pathSeparator),
+                '--add-modules', 'javafx.controls'
+    }
 }

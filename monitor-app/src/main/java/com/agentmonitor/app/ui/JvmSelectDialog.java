@@ -3,11 +3,12 @@ package com.agentmonitor.app.ui;
 import java.util.function.Consumer;
 import java.util.Comparator;
 import java.util.Locale;
-import com.agentmonitor.app.util.AppLog;
+import com.agentmonitor.core.util.AppLog;
+import javafx.beans.binding.Bindings;
 import javafx.scene.control.Tooltip;
 
-import com.agentmonitor.app.model.JvmProcess;
-import com.agentmonitor.app.service.JvmService;
+import com.agentmonitor.model.jvm.JvmProcess;
+import com.agentmonitor.core.service.JvmService;
 
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
@@ -56,19 +57,19 @@ public class JvmSelectDialog {
         dialog.setTitle("Agent Monitor");
         dialog.getIcons().add(AppIcons.monitorIcon());
         dialog.setResizable(true);
-        dialog.setMinWidth(760);
-        dialog.setMinHeight(560);
+        dialog.setMinWidth(680);
+        dialog.setMinHeight(420);
 
         listView = buildListView();
 
         /* ── Big title ─────────────────────────────────────── */
         Label appTitle = new Label("选择目标进程");
         appTitle.getStyleClass().add("jvm-select-title");
-        Label appSubtitle = new Label("连接本机 Java 应用，按需观测方法耗时与调用链。");
-        appSubtitle.getStyleClass().add("jvm-select-subtitle");
-        VBox titleBox = new VBox(6, appTitle, appSubtitle);
-        titleBox.setAlignment(Pos.CENTER_LEFT);
-        titleBox.setPadding(new Insets(8, 0, 8, 0));
+        Region titleSpacer = new Region();
+        HBox.setHgrow(titleSpacer, Priority.ALWAYS);
+        resultCount.getStyleClass().add("section-header");
+        HBox titleRow = new HBox(12, appTitle, titleSpacer, resultCount);
+        titleRow.setAlignment(Pos.CENTER_LEFT);
 
         /* ── Search bar ─────────────────────────────────────── */
         searchField.setPromptText("搜索 JVM 进程（PID / 主类 / 路径）");
@@ -114,11 +115,14 @@ public class JvmSelectDialog {
         refreshProgress.setVisible(false);
         refreshProgress.setManaged(false);
 
-        HBox searchBar = new HBox(8, searchField, refreshProgress, refreshBtn);
+        SearchBox search = new SearchBox(searchField,"JVM 进程",true);HBox.setHgrow(search,Priority.ALWAYS);
+        HBox searchBar = new HBox(8, search, refreshProgress, refreshBtn);
         searchBar.setAlignment(Pos.CENTER_LEFT);
 
         /* ── List ───────────────────────────────────────────── */
-        listView.setPrefHeight(390);
+        listView.prefHeightProperty().bind(Bindings.createDoubleBinding(
+                () -> Math.min(300.0, Math.max(180.0, filtered.size() * 56.0 + 2)), filtered));
+        listView.setMinHeight(150);
         VBox.setVgrow(listView, Priority.ALWAYS);
 
         /* ── Confirm button ─────────────────────────────────── */
@@ -139,25 +143,20 @@ public class JvmSelectDialog {
         HBox btnBar = new HBox(12, keyboardHint, footerSpacer, confirmBtn);
         btnBar.setAlignment(Pos.CENTER_LEFT);
         btnBar.getStyleClass().add("selector-footer");
-        resultCount.getStyleClass().add("section-header");
-        VBox content = new VBox(16, titleBox, searchBar, resultCount, listView, btnBar);
-        content.getStyleClass().add("jvm-select-card");
-        HBox.setHgrow(content, Priority.ALWAYS);
-        VBox.setVgrow(listView, Priority.ALWAYS);
-
-        HBox hCenter = new HBox(content);
-        hCenter.setPadding(new Insets(24, 48, 24, 48));
+        VBox content = new VBox(12, titleRow, searchBar, listView, btnBar);
         VBox.setVgrow(content, Priority.ALWAYS);
 
-        VBox root = new VBox(hCenter);
+        VBox root = new VBox(content);
         root.getStyleClass().add("jvm-select-root");
-        VBox.setVgrow(hCenter, Priority.ALWAYS);
+        root.setPadding(new Insets(20, 24, 16, 24));
 
-        Scene scene = new Scene(root, 920, 660);
+        Scene scene = new Scene(root, 740, 450);
         scene.getStylesheets().add(
                 getClass().getResource("/com/agentmonitor/app/main.css").toExternalForm());
-        scene.setOnKeyPressed(e -> {
-            if (e.getCode() == KeyCode.ESCAPE) {
+        root.setOnKeyPressed(e -> {
+            if (e.isShortcutDown() && e.getCode() == KeyCode.F) {
+                searchField.requestFocus();searchField.selectAll();e.consume();
+            } else if (e.getCode() == KeyCode.ESCAPE) {
                 dialog.close();
                 e.consume();
             } else if (e.getCode() == KeyCode.F5 || (e.isShortcutDown() && e.getCode() == KeyCode.R)) {
@@ -175,7 +174,7 @@ public class JvmSelectDialog {
     private ListView<JvmProcess> buildListView() {
         ListView<JvmProcess> lv = new ListView<>(filtered);
         lv.getStyleClass().add("jvm-list-view");
-        lv.setFixedCellSize(82);
+        lv.setFixedCellSize(56);
         lv.setCellFactory(list -> new JvmCard());
         lv.setOnMouseClicked(e -> {
             if (e.getClickCount() == 2 && lv.getSelectionModel().getSelectedItem() != null)
@@ -210,7 +209,7 @@ public class JvmSelectDialog {
         private final Label titleLbl = new Label();
         private final Label detailLbl = new Label();
         private final Label typeBadge = new Label();
-        private final VBox textBox = new VBox(4, titleLbl, detailLbl);
+        private final VBox textBox = new VBox(2, titleLbl, detailLbl);
         private final HBox card = new HBox(12, pidBadge, textBox, new Region(), typeBadge);
 
         JvmCard() {
@@ -228,9 +227,9 @@ public class JvmSelectDialog {
             card.getStyleClass().add("jvm-process-card");
             card.setAlignment(Pos.CENTER_LEFT);
 
-            setPrefHeight(82);
-            setMinHeight(82);
-            setMaxHeight(82);
+            setPrefHeight(56);
+            setMinHeight(56);
+            setMaxHeight(56);
         }
 
         @Override
@@ -299,7 +298,7 @@ public class JvmSelectDialog {
     /* ── Actions ───────────────────────────────────────────── */
     private void confirm() {
         JvmProcess selected = listView.getSelectionModel().getSelectedItem();
-        if (selected == null || refreshing || confirmed) return;
+        if (selected == null || confirmed) return;
         confirmed = true;
         dialog.close();
         if (onConfirm != null) onConfirm.accept(selected);
@@ -381,6 +380,15 @@ public class JvmSelectDialog {
     public void show(Consumer<JvmProcess> onConfirmCallback) {
         this.onConfirm = onConfirmCallback;
         dialog.show();
+    }
+
+    /** Reuse the same selector inside the application's existing window. */
+    public void showEmbedded(Scene scene, Consumer<JvmProcess> onConfirmCallback) {
+        this.onConfirm = onConfirmCallback;
+        var content = dialog.getScene().getRoot();
+        dialog.getScene().setRoot(new javafx.scene.layout.StackPane());
+        scene.setRoot(content);
+        Platform.runLater(searchField::requestFocus);
     }
 
     public void showAndWait(Consumer<JvmProcess> onConfirmCallback) {

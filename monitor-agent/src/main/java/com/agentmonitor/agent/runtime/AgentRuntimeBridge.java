@@ -31,15 +31,40 @@ public final class AgentRuntimeBridge implements BootstrapBridge.Runtime {
 
     @Override
     public Object enterDependency(String className, String methodName, Object target, Object[] arguments) {
+        if (className.equals("agent.async")) {
+            Object task = arguments == null || arguments.length == 0 ? null : arguments[0];
+            switch (methodName) {
+                case "submit" -> {
+                    Object submitted = task;
+                    if (arguments != null) for (Object arg : arguments) if (arg instanceof Runnable || arg instanceof java.util.concurrent.ForkJoinTask<?> || arg instanceof java.util.concurrent.Callable<?>) { submitted=arg; break; }
+                    com.agentmonitor.agent.interceptor.AsyncSpanSupport.submit(target, submitted); return new AsyncSubmission(submitted);
+                }
+                case "reject" -> { com.agentmonitor.agent.interceptor.AgentDiagnostics.rejected(); return null; }
+                case "begin" -> { com.agentmonitor.agent.interceptor.AsyncSpanSupport.begin(task); return null; }
+                case "run" -> { return com.agentmonitor.agent.interceptor.AsyncSpanSupport.begin(task); }
+                case "end" -> { com.agentmonitor.agent.interceptor.AsyncSpanSupport.finishCurrent(task instanceof Throwable t ? t : null); return null; }
+                default -> { return null; }
+            }
+        }
+        if (methodName.equals("getConnection")) return com.agentmonitor.agent.interceptor.ConnectionWaitSupport.enter(className);
+        if(com.agentmonitor.agent.interceptor.ClientSpanSupport.supported(className))return com.agentmonitor.agent.interceptor.ClientSpanSupport.enter(className,methodName,target,arguments);
         return DependencySpanSupport.enter(className, methodName, target, arguments);
     }
 
     @Override
     public void exitDependency(Object state, Object target, Object[] arguments, Throwable error) {
+        if(state instanceof com.agentmonitor.agent.interceptor.ClientSpanSupport.Context client){com.agentmonitor.agent.interceptor.ClientSpanSupport.exit(client,arguments==null||arguments.length==0?null:arguments[0],error);return;}
+        if (state instanceof AsyncSubmission submission) { com.agentmonitor.agent.interceptor.AsyncSpanSupport.failed(target, submission.task(), error); return; }
+        if (state instanceof SpanContext span) {
+            if (span.attributes.containsKey("agent.pool.connection_wait_nanos")) com.agentmonitor.agent.interceptor.ConnectionWaitSupport.exit(span,error);
+            else com.agentmonitor.agent.interceptor.AsyncSpanSupport.finish(span,error);
+            return;
+        }
         if (state instanceof DependencySpanSupport.Context context) {
             DependencySpanSupport.exit(context, target, arguments, null, error);
         }
     }
+    private record AsyncSubmission(Object task) { }
 
     @Override
     public Object enterJdbc(String methodName, Object statement, Object[] arguments) {

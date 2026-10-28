@@ -22,6 +22,7 @@ sourceSets {
 
 dependencies {
     implementation project(':monitor-model')
+    implementation 'io.opentelemetry.proto:opentelemetry-proto:1.11.1-alpha'
     implementation 'net.bytebuddy:byte-buddy:1.18.7'
     implementation 'io.netty:netty-codec:4.1.135.Final'
     implementation 'io.netty:netty-handler:4.1.135.Final'

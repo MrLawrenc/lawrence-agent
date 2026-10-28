@@ -30,6 +30,10 @@ public final class AgentConfig {
     private final String[] packagePrefixes;
     private final String[] includeClasses;
     private final String host;
+    private final String otlpEndpoint;
+    private final String captureSessionId;
+    private final boolean diagnosticsEnabled;
+    private final MonitoringConfig.Overhead overhead;
     private final int port;
     private final String jarPath;
     private final String[] excludeConditions;
@@ -46,6 +50,7 @@ public final class AgentConfig {
     private final boolean captureSqlParameters;
     private final boolean jdbcEnabled;
     private final boolean httpEnabled;
+    private final boolean redisEnabled,messagingEnabled;
     private final String serviceName;
     private final String serviceVersion;
     private final String deploymentEnvironment;
@@ -61,14 +66,16 @@ public final class AgentConfig {
                         String agentLogDirectory,
                         long fileRotateBytes, long fileRotateMillis, boolean fileCompress,
                         boolean captureArguments, boolean captureReturnValue, boolean captureSqlParameters,
-                        boolean jdbcEnabled, boolean httpEnabled,
+                        boolean jdbcEnabled, boolean httpEnabled,boolean redisEnabled,boolean messagingEnabled,
                         String serviceName, String serviceVersion, String deploymentEnvironment,
                         int samplingRatePercent, long slowThresholdMillis,
                         int tailMaxBufferedSpans, int tailMaxBufferedSizeMb,
-                        TailOverflowPolicy tailOverflowPolicy) {
+                        TailOverflowPolicy tailOverflowPolicy, String otlpEndpoint, String captureSessionId, boolean diagnosticsEnabled, MonitoringConfig.Overhead overhead) {
         this.packagePrefixes = packagePrefixes;
         this.includeClasses = includeClasses;
         this.host = host;
+        this.otlpEndpoint = otlpEndpoint; this.captureSessionId = captureSessionId;this.diagnosticsEnabled=diagnosticsEnabled;
+        this.overhead=overhead;
         this.port = port;
         this.jarPath = jarPath;
         this.excludeConditions = excludeConditions;
@@ -85,6 +92,7 @@ public final class AgentConfig {
         this.captureSqlParameters = captureSqlParameters;
         this.jdbcEnabled = jdbcEnabled;
         this.httpEnabled = httpEnabled;
+        this.redisEnabled=redisEnabled;this.messagingEnabled=messagingEnabled;
         this.serviceName = safe(serviceName);
         this.serviceVersion = safe(serviceVersion);
         this.deploymentEnvironment = safe(deploymentEnvironment);
@@ -109,6 +117,9 @@ public final class AgentConfig {
         String host = DEFAULT_HOST;
         int port = DEFAULT_PORT;
         String jar = "";
+        String otlpEndpoint = "http://127.0.0.1:4318/v1/traces", captureSessionId = "";
+        boolean diagnosticsEnabled=true;
+        Properties overheadProperties=new Properties();
         String[] excludes = new String[0];
         String[] methodExcludes = new String[0];
         EnumSet<ExporterType> exporters = DEFAULT_EXPORTERS.clone();
@@ -123,6 +134,7 @@ public final class AgentConfig {
         boolean captureSqlParameters = true;
         boolean jdbcEnabled = true;
         boolean httpEnabled = true;
+        boolean redisEnabled=true,messagingEnabled=true;
         String serviceName = "";
         String serviceVersion = "";
         String deploymentEnvironment = "";
@@ -138,6 +150,7 @@ public final class AgentConfig {
                 if (keyValue.length != 2) continue;
                 String key = keyValue[0].trim();
                 String value = keyValue[1].trim();
+                if(key.startsWith("overhead."))overheadProperties.setProperty(key,value);
                 switch (key) {
                     case "pkg" -> packages = splitPipe(value);
                     case "inclCls" -> includedClasses = splitPipe(value);
@@ -155,8 +168,11 @@ public final class AgentConfig {
                     case "captureArgs" -> captureArguments = Boolean.parseBoolean(value);
                     case "captureReturnValue" -> captureReturnValue = Boolean.parseBoolean(value);
                     case "captureSqlParameters", "capture.sqlParameters" -> captureSqlParameters = Boolean.parseBoolean(value);
+                    case "diagnostics.enabled" -> diagnosticsEnabled=Boolean.parseBoolean(value);
                     case "dependency.jdbc" -> jdbcEnabled = Boolean.parseBoolean(value);
                     case "dependency.http" -> httpEnabled = Boolean.parseBoolean(value);
+                    case "dependency.redis" -> redisEnabled=Boolean.parseBoolean(value);
+                    case "dependency.messaging" -> messagingEnabled=Boolean.parseBoolean(value);
                     case "resource.service.name" -> serviceName = value;
                     case "resource.service.version" -> serviceVersion = value;
                     case "resource.deployment.environment" -> deploymentEnvironment = value;
@@ -170,6 +186,8 @@ public final class AgentConfig {
                             positiveInt(value, tailMaxBufferedSizeMb);
                     case "tailOverflowPolicy", "sampling.tailOverflowPolicy" -> tailOverflowPolicy =
                             tailOverflowPolicy(value, tailOverflowPolicy);
+                    case "otlpEndpoint", "otlp.endpoint" -> otlpEndpoint = value;
+                    case "captureSessionId", "capture.session.id" -> captureSessionId = value;
                     case "port" -> port = parseInt(value, port);
                     default -> { }
                 }
@@ -178,10 +196,10 @@ public final class AgentConfig {
         return new AgentConfig(packages, includedClasses, host, port, jar, excludes, methodExcludes, exporters,
                 fileDirectory, fileSessionDirectory, agentLogDirectory,
                 fileRotateBytes, fileRotateMillis, fileCompress,
-                captureArguments, captureReturnValue, captureSqlParameters, jdbcEnabled, httpEnabled,
+                captureArguments, captureReturnValue, captureSqlParameters, jdbcEnabled, httpEnabled,redisEnabled,messagingEnabled,
                 serviceName, serviceVersion, deploymentEnvironment,
                 samplingRatePercent, slowThresholdMillis,
-                tailMaxBufferedSpans, tailMaxBufferedSizeMb, tailOverflowPolicy);
+                tailMaxBufferedSpans, tailMaxBufferedSizeMb, tailOverflowPolicy, otlpEndpoint, captureSessionId, diagnosticsEnabled, readOverhead(overheadProperties));
     }
 
     private static AgentConfig parseConfigFile(String file) {
@@ -210,6 +228,8 @@ public final class AgentConfig {
                             properties.getProperty("capture.sqlParameters", "true")).trim()),
                     Boolean.parseBoolean(properties.getProperty("dependency.jdbc", "true").trim()),
                     Boolean.parseBoolean(properties.getProperty("dependency.http", "true").trim()),
+                    Boolean.parseBoolean(properties.getProperty("dependency.redis","true").trim()),
+                    Boolean.parseBoolean(properties.getProperty("dependency.messaging","true").trim()),
                     properties.getProperty("resource.service.name", "").trim(),
                     properties.getProperty("resource.service.version", "").trim(),
                     properties.getProperty("resource.deployment.environment", "").trim(),
@@ -226,7 +246,7 @@ public final class AgentConfig {
                             DEFAULT_TAIL_MAX_BUFFERED_SIZE_MB),
                     tailOverflowPolicy(properties.getProperty("tailOverflowPolicy",
                             properties.getProperty("sampling.tailOverflowPolicy", "")),
-                            DEFAULT_TAIL_OVERFLOW_POLICY));
+                            DEFAULT_TAIL_OVERFLOW_POLICY), properties.getProperty("otlp.endpoint", "http://127.0.0.1:4318/v1/traces"), properties.getProperty("capture.session.id", ""), Boolean.parseBoolean(properties.getProperty("diagnostics.enabled","true")), readOverhead(properties));
         } catch (Exception e) {
             // Configuration is read before the session log destination is known.  Do not
             // print into the monitored business process when a malformed file is supplied.
@@ -235,10 +255,24 @@ public final class AgentConfig {
         }
     }
 
+    private static MonitoringConfig.Overhead readOverhead(Properties p) {
+        var d=MonitoringConfig.Overhead.defaults();
+        return new MonitoringConfig.Overhead(Boolean.parseBoolean(p.getProperty("overhead.enabled",String.valueOf(d.enabled()))),
+            Long.parseLong(p.getProperty("overhead.queueMaxBytes",String.valueOf(d.queueMaxBytes()))),
+            Integer.parseInt(p.getProperty("overhead.highWatermarkPercent",String.valueOf(d.highWatermarkPercent()))),
+            Integer.parseInt(p.getProperty("overhead.lowWatermarkPercent",String.valueOf(d.lowWatermarkPercent()))),
+            Integer.parseInt(p.getProperty("overhead.minimumSamplingRatePercent",String.valueOf(d.minimumSamplingRatePercent()))),
+            Long.parseLong(p.getProperty("overhead.adviceBudgetNanosPerSecond",String.valueOf(d.adviceBudgetNanosPerSecond()))),
+            Long.parseLong(p.getProperty("overhead.recoveryMillis",String.valueOf(d.recoveryMillis()))));
+    }
+    public MonitoringConfig.Overhead getOverhead(){return overhead;}
     public String[] getPackagePrefixes() { return packagePrefixes.clone(); }
     public String[] getIncludeClasses() { return includeClasses.clone(); }
     public String getHost() { return host; }
     public int getPort() { return port; }
+    public String getOtlpEndpoint() { return otlpEndpoint; }
+    public boolean isDiagnosticsEnabled() { return diagnosticsEnabled; }
+    public String getCaptureSessionId() { return captureSessionId; }
     public String getJarPath() { return jarPath; }
     public String[] getExcludeConditions() { return excludeConditions.clone(); }
     public String[] getExcludeMethods() { return excludeMethods.clone(); }
@@ -254,6 +288,8 @@ public final class AgentConfig {
     public boolean isCaptureSqlParameters() { return captureSqlParameters; }
     public boolean isJdbcEnabled() { return jdbcEnabled; }
     public boolean isHttpEnabled() { return httpEnabled; }
+    public boolean isRedisEnabled(){return redisEnabled;}
+    public boolean isMessagingEnabled(){return messagingEnabled;}
     public String getServiceName() { return serviceName; }
     public String getServiceVersion() { return serviceVersion; }
     public String getDeploymentEnvironment() { return deploymentEnvironment; }

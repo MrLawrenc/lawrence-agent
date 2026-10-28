@@ -1,0 +1,8 @@
+**
+!Dockerfile
+!build/
+!build/install/
+!build/install/performance-lab/
+!build/install/performance-lab/lib/
+!build/install/performance-lab/lib/**
+!build/monitor-cli-all.jar

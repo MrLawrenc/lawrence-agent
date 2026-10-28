@@ -43,7 +43,8 @@ class RootSpanRuleTest {
 
         assertNotNull(span);
         assertTrue(span.parentSpanId.isBlank());
-        assertTrue(span.traceId.startsWith("trace-"));
+        assertTrue(span.traceId.matches("[0-9a-f]{32}"));
+        assertTrue(span.spanId.matches("[0-9a-f]{16}"));
     }
 
     @Test

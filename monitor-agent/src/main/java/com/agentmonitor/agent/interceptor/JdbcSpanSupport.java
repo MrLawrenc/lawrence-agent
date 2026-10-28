@@ -25,6 +25,7 @@ public final class JdbcSpanSupport {
     public static volatile boolean ENABLED = true;
     /** Whether the raw values bound to PreparedStatement placeholders are retained. */
     public static volatile boolean CAPTURE_PARAMETERS = true;
+    public static boolean captureParameters(){return CAPTURE_PARAMETERS && OverheadController.detailEnabled();}
 
     private JdbcSpanSupport() { }
 
@@ -58,11 +59,11 @@ public final class JdbcSpanSupport {
     private static Context enterInternal(String methodName, Object statement, Object[] arguments) {
         String method = methodName == null ? "" : methodName;
         if (isParameterSetter(method, arguments)) {
-            return CAPTURE_PARAMETERS
+            return captureParameters()
                     ? Context.parameter(statement, parameterIndex(arguments), parameterValue(method, arguments))
-                    : null;
+                    : CAPTURE_PARAMETERS ? Context.parameter(statement, parameterIndex(arguments), "{\"_unavailable\":true,\"_reason\":\"adaptive_capture_disabled\"}") : null;
         }
-        if ("clearParameters".equals(method)) return CAPTURE_PARAMETERS ? Context.clearParameters(statement) : null;
+        if ("clearParameters".equals(method)) return Context.clearParameters(statement);
         if ("addBatch".equals(method)) return Context.addBatch(statement);
         if ("clearBatch".equals(method)) return Context.clearBatch(statement);
         if ("close".equals(method)) return Context.close(statement);
@@ -72,6 +73,7 @@ public final class JdbcSpanSupport {
         // root, and a proxy delegating to another JDBC implementation must not create a nested,
         // duplicate SQL span.
         SpanContext parent = MethodSpanAdvice.SPAN_STACK.get().peek();
+        if (parent == null) parent = AsyncSpanSupport.current();
         if (parent == null || parent.kind == SpanKind.SQL) return null;
 
         InFlightSpans.Ticket invocation = InFlightSpans.enter(false);
@@ -169,7 +171,7 @@ public final class JdbcSpanSupport {
         if (snapshot.batchCount > 0) {
             values.put(SpanAttribute.DB_OPERATION_BATCH_SIZE, String.valueOf(snapshot.batchCount));
             values.put(SpanAttribute.BATCH_PARAMETER_SAMPLES, String.valueOf(snapshot.batches.size()));
-            if (CAPTURE_PARAMETERS && snapshot.batchCount > snapshot.batches.size()) {
+            if (captureParameters() && snapshot.batchCount > snapshot.batches.size()) {
                 values.put(SpanAttribute.BATCH_PARAMETERS_TRUNCATED, "true");
             }
         }
@@ -179,11 +181,12 @@ public final class JdbcSpanSupport {
         if (!database.namespace.isBlank()) values.put(SpanAttribute.DB_NAMESPACE, database.namespace);
         if (!database.serverAddress.isBlank()) values.put(SpanAttribute.SERVER_ADDRESS, database.serverAddress);
         if (!database.serverPort.isBlank()) values.put(SpanAttribute.SERVER_PORT, database.serverPort);
-        if (CAPTURE_PARAMETERS) {
+        if (captureParameters()) {
             String parameters = snapshot.batches.isEmpty()
                     ? parametersJson(snapshot.parameters)
                     : batchesJson(snapshot.batches);
             values.put(SpanAttribute.SQL_PARAMETERS, parameters);
+            if(parameters.contains("adaptive_capture_disabled"))values.put(SpanAttribute.CAPTURE_TRUNCATED,"sqlParameters_adaptive");
         }
         return values;
     }
@@ -206,7 +209,7 @@ public final class JdbcSpanSupport {
         synchronized (STATEMENTS) {
             StatementState state = STATEMENTS.computeIfAbsent(statement, ignored -> new StatementState());
             state.batchCount++;
-            if (CAPTURE_PARAMETERS) {
+            if (captureParameters()) {
                 if (state.batches.size() == MAX_BATCHES) state.batches.remove(0);
                 state.batches.add(new LinkedHashMap<>(state.parameters));
             }

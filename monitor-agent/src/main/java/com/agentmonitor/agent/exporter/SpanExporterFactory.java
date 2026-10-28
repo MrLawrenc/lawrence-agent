@@ -17,11 +17,13 @@ public final class SpanExporterFactory {
         SpanPayloadSerializer serializer = new JsonSpanPayloadSerializer();
         java.util.Map<String, String> resource = AgentResource.detect(config);
         List<SpanExporter> exporters = new ArrayList<>();
+        if (!config.getExporters().contains(ExporterType.NETTY) && !config.getCaptureSessionId().isBlank()) exporters.add(new NettySpanExporter(config.getHost(), config.getPort(), serializer, resource, false));
         for (ExporterType exporterType : config.getExporters()) {
             try {
                 switch (exporterType) {
                     case NETTY -> exporters.add(new NettySpanExporter(config.getHost(), config.getPort(), serializer,
                             resource));
+                    case OTLP -> exporters.add(new OtlpHttpSpanExporter(config.getOtlpEndpoint(), resource));
                     case FILE -> {
                         if (config.getFileDirectory() == null || config.getFileDirectory().isBlank()) {
                             AgentLog.warn("[agent-monitor] file exporter skipped: fileDir is empty");
@@ -37,6 +39,6 @@ public final class SpanExporterFactory {
                         + ": " + e.getMessage());
             }
         }
-        return exporters.isEmpty() ? null : new AsyncSpanExporter(new CompositeSpanExporter(exporters));
+        return exporters.isEmpty() ? null : new AsyncSpanExporter(new CompositeSpanExporter(exporters),config.getOverhead());
     }
 }
