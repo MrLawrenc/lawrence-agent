@@ -15,6 +15,7 @@ public final class JfrAnalysis {
         List<Map<String,Object>> timeline=new ArrayList<>();long omittedTimeline=0;
         List<Map<String,Object>> pauses = new ArrayList<>(); Map<String,Long> exceptions = new LinkedHashMap<>();
         Map<String,Long> exceptionWindows=new LinkedHashMap<>();
+        long unresolvedFrames = 0;
         long omittedStacks = 0, omittedPauses = 0, omittedExceptions = 0, events = 0; boolean eventLimit = false;
         try (RecordingFile input = new RecordingFile(recording)) {
             while (input.hasMoreEvents()) {
@@ -22,10 +23,11 @@ public final class JfrAnalysis {
                 if (++events > 2_000_000) { eventLimit = true; break; }
                 RecordedEvent event = input.readEvent(); String name = event.getEventType().getName();
                 eventCounts.merge(name, 1L, Long::sum);
+                StackDetails observedStack=stack(event);unresolvedFrames+=observedStack.unresolvedFrames();
                 if(Set.of("jdk.ExecutionSample","jdk.NativeMethodSample","jdk.GCPhasePause","jdk.GarbageCollection","jdk.JavaMonitorEnter","jdk.ThreadPark","jdk.SocketRead","jdk.SocketWrite","jdk.FileRead","jdk.FileWrite","jdk.ObjectAllocationSample").contains(name)){
                     if(timeline.size()<20000){Map<String,Object> point=new LinkedHashMap<>();point.put("eventType",name);point.put("startedAtEpochMillis",event.getStartTime().toEpochMilli());point.put("durationNanos",event.getDuration().toNanos());
                         RecordedThread thread=event.hasField("sampledThread")?event.getThread("sampledThread"):event.getThread();if(thread!=null){point.put("javaThreadId",thread.getJavaThreadId());point.put("threadName",thread.getJavaName());}
-                        if(event.getStackTrace()!=null&&!event.getStackTrace().getFrames().isEmpty()){var method=event.getStackTrace().getFrames().get(0).getMethod();point.put("method",method.getType().getName()+"#"+method.getName()+method.getDescriptor());}
+                        if(event.getStackTrace()!=null&&!event.getStackTrace().getFrames().isEmpty()){var method=event.getStackTrace().getFrames().get(0).getMethod();if(method!=null&&method.getType()!=null)point.put("method",method.getType().getName()+"#"+method.getName()+method.getDescriptor());else point.put("unresolvedStackFrame",true);}
                         timeline.add(point);
                     }else omittedTimeline++;
                 }
@@ -40,7 +42,7 @@ public final class JfrAnalysis {
                     String type = event.getClass("thrownClass").getName();
                     String window=event.getStartTime().getEpochSecond()+"|"+type;
                     if(exceptionWindows.containsKey(window)||exceptionWindows.size()<8192)exceptionWindows.merge(window,1L,Long::sum);else omittedExceptions++;
-                    String key = type+"\n"+stack(event);
+                    String key = type+"\n"+observedStack.folded();
                     if (exceptions.containsKey(key) || exceptions.size()<8192) exceptions.merge(key,1L,Long::sum); else omittedExceptions++;
                 }
                 String mode = switch (name) {
@@ -52,7 +54,7 @@ public final class JfrAnalysis {
                 };
                 if (mode == null) continue;
                 long weight = mode.equals("allocation_bytes") ? event.getLong("weight") : mode.equals("cpu_samples") ? 1 : Math.max(0,event.getDuration().toNanos());
-                String stack = stack(event); if (stack.isBlank()) continue;
+                String stack = observedStack.folded(); if (stack.isBlank()) continue;
                 Map<String,Long> bucket = stacks.computeIfAbsent(mode, k -> new LinkedHashMap<>());
                 if (bucket.containsKey(stack) || bucket.size()<8192) bucket.merge(stack,weight,Long::sum); else omittedStacks++;
             }
@@ -62,20 +64,22 @@ public final class JfrAnalysis {
         result.put("schemaVersion",1); result.put("source", recording.getFileName().toString()); result.put("eventCounts",eventCounts);
         result.put("stacks", stacks); result.put("gcEvents",pauses); result.put("exceptionThrows", exceptions);
         result.put("exceptionStormCandidates",exceptionWindows.entrySet().stream().filter(e->e.getValue()>=100).map(e->{int split=e.getKey().indexOf('|');return Map.of("epochSecond",Long.parseLong(e.getKey().substring(0,split)),"type",e.getKey().substring(split+1),"observedThrowEvents",e.getValue(),"thresholdEventsPerSecond",100);}).toList());
-        result.put("limits",Map.of("omittedStackEvents", omittedStacks, "omittedGcEvents", omittedPauses, "omittedExceptionEvents", omittedExceptions,"eventLimitReached", eventLimit));
+        result.put("limits",Map.of("omittedStackEvents", omittedStacks, "omittedGcEvents", omittedPauses, "omittedExceptionEvents", omittedExceptions,"eventLimitReached", eventLimit,"unresolvedFrameOccurrences",unresolvedFrames));
         result.put("limitations",List.of("CPU samples are statistical evidence, not exact method CPU durations.",
                 "JFR configuration controls event coverage. Allocation bytes are sampled weights.",
+                "Unresolved JFR frame metadata is shown as a placeholder and counted; it is not an identified application method.",
                 "ThreadPark includes parks unrelated to lock contention. Time overlap with GC is correlation, not proof of cause.",
                 "The recording contains at most the final 120 seconds/32MiB ring. Exception throws require exceptionEvents=true."));
         return result;
     }
-    private static String stack(RecordedEvent event) {
-        RecordedStackTrace trace = event.getStackTrace(); if (trace == null) return "";
-        var frames = trace.getFrames(); List<String> names = new ArrayList<>();
+    private record StackDetails(String folded,long unresolvedFrames) { }
+    private static StackDetails stack(RecordedEvent event) {
+        RecordedStackTrace trace = event.getStackTrace(); if (trace == null) return new StackDetails("",0);
+        var frames = trace.getFrames(); List<String> names = new ArrayList<>();long unresolved=0;
         for (int i=Math.min(frames.size(),128)-1;i>=0;i--) {
-            RecordedMethod method=frames.get(i).getMethod(); names.add(method.getType().getName()+"."+method.getName());
+            RecordedMethod method=frames.get(i).getMethod();if(method==null||method.getType()==null){names.add("<unresolved JFR frame>");unresolved++;}else names.add(method.getType().getName()+"."+method.getName());
         }
-        return String.join(";", names);
+        return new StackDetails(String.join(";", names),unresolved);
     }
     public Map<String,Object> export(Path recording, Path directory) throws Exception {
         Map<String,Object> result = analyze(recording); DiagnosticTask.phase("写入 JFR 分析与火焰图", true); Files.createDirectories(directory);

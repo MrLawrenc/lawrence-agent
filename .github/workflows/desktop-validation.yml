@@ -3,11 +3,23 @@ on:
   workflow_dispatch:
   push:
     branches: ["codex/**"]
+    paths:
+      - 'monitor-*/**'
+      - 'scripts/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle/**'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - 'monitor-app/**'
       - 'monitor-core/**'
       - 'monitor-model/**'
+      - 'monitor-agent/**'
+      - 'monitor-cli/**'
+      - 'scripts/desktop-soak/**'
+      - 'scripts/package-candidate.py'
+      - 'scripts/generate-native-icons.py'
       - 'scripts/ui-preview/**'
       - 'scripts/diagnostics-preview/**'
       - 'build.gradle'
@@ -41,15 +53,15 @@ jobs:
       - name: Linux JavaFX verification
         if: runner.os == 'Linux'
         shell: bash
-        run: xvfb-run -a ./gradlew :monitor-app:uiPreview --args=--verify :monitor-app:diagnosticsPreview -PuiScale=${{ matrix.scale }} --console=plain --max-workers=1
+        run: xvfb-run -a ./gradlew :monitor-app:uiPreview --args=--verify :monitor-app:diagnosticsPreview "-PuiScale=${{ matrix.scale }}" --console=plain --max-workers=1
       - name: macOS JavaFX verification
         if: runner.os == 'macOS'
         shell: bash
-        run: ./gradlew :monitor-app:uiPreview --args=--verify :monitor-app:diagnosticsPreview -PuiScale=${{ matrix.scale }} --console=plain --max-workers=1
+        run: ./gradlew :monitor-app:uiPreview --args=--verify :monitor-app:diagnosticsPreview "-PuiScale=${{ matrix.scale }}" --console=plain --max-workers=1
       - name: Windows JavaFX verification
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./gradlew.bat :monitor-app:uiPreview --args=--verify :monitor-app:diagnosticsPreview -PuiScale=${{ matrix.scale }} --console=plain --max-workers=1
+        run: ./gradlew.bat :monitor-app:uiPreview --args=--verify :monitor-app:diagnosticsPreview "-PuiScale=${{ matrix.scale }}" --console=plain --max-workers=1
       - name: Build platform release candidate
         if: matrix.scale == '1.0'
         shell: bash
