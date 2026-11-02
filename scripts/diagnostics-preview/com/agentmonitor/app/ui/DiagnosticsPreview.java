@@ -23,7 +23,7 @@ public final class DiagnosticsPreview extends Application {
         var window=new DiagnosticsWindow(owner,"离线验证",active::get,()->null);window.show();
         after(2500,()->{
             try{
-                var tabs=(TabPane)window.getScene().lookup(".tab-pane");require(tabs.getTabs().size()==10,"Ten diagnostic evidence tabs");
+                var tabs=(TabPane)window.getScene().lookup("#diagnostics-tabs");require(tabs.getTabs().size()==10,"Ten diagnostic evidence tabs");
                 var chart=(LineChart<?,?>)window.getScene().lookup(".chart");require(!chart.getData().isEmpty()&&chart.getData().get(0).getData().size()>1,"Real timestamped metrics render");
                 capture(window.getScene(),"diagnostics-wide");
                 tabs.getSelectionModel().select(1);window.getScene().getRoot().applyCss();window.getScene().getRoot().layout();
@@ -31,9 +31,10 @@ public final class DiagnosticsPreview extends Application {
                 capture(window.getScene(),"diagnostics-live");
                 tabs.getSelectionModel().select(2);window.getScene().getRoot().applyCss();window.getScene().getRoot().layout();
                 var threads=(TableView<?>)tabs.getTabs().get(2).getContent().lookup(".table-view");int total=threads.getItems().size();require(total>1,"Thread evidence renders");
-                var search=(TextField)tabs.getTabs().get(2).getContent().lookup(".text-field");search.setText("unfinished-business");require(threads.getItems().size()==1,"Thread search filters actual evidence");threads.getSelectionModel().selectFirst();
+                var search=(TextField)tabs.getTabs().get(2).getContent().lookup(".text-field");search.setText("unfinished-business");
                 window.setWidth(820);window.setHeight(640);
                 after(300,()->{try{
+                    require(threads.getItems().size()==1,"Thread search filters actual evidence asynchronously");threads.getSelectionModel().selectFirst();
                     capture(window.getScene(),"diagnostics-compact");
                     var refresh=(Button)window.getScene().lookup("#diagnostics-refresh");refresh.fire();
                     var capture=(MenuButton)window.getScene().lookup("#diagnostics-capture");require(!capture.isDisabled(),"Evidence refresh keeps diagnostic actions visually stable");
@@ -45,11 +46,12 @@ public final class DiagnosticsPreview extends Application {
                         ((TextField)tabs.getTabs().get(8).getContent().lookup(".text-field")).setText("DiagnosticTarget");require(!classes.getItems().isEmpty(),"Class search covers full evidence before pagination");
                         var pane=(DiagnosticsPane)window.getScene().getRoot();
                         Path invalid=Files.createTempDirectory(Path.of("build"),"ui-invalid-session-");
+                        Files.writeString(invalid.resolve("session.json"),"{\"application\":\"agent-monitor\",\"schemaVersion\":1,\"sessionId\":\"invalid-preview\",\"startedAt\":\"2026-01-01T00:00:00Z\"}");
                         Files.createDirectories(invalid.resolve("diagnostics"));Files.writeString(invalid.resolve("diagnostics/threads-latest.json"),"{invalid");
                         active.set(new MonitoringSession("invalid-preview",invalid.getParent(),invalid,Instant.now()));pane.refreshEvidence();
                         require(threads.getItems().isEmpty()&&classes.getItems().isEmpty()&&chart.getData().isEmpty(),"Changing evidence source clears the previous source before loading");
                         after(700,()->{try{
-                            require(((Label)pane.lookup("#diagnostics-status")).getText().startsWith("操作失败"),"An unreadable new session reports a load failure without old evidence");
+                            require(pane.lookupAll(".text-area").stream().anyMatch(n->((TextArea)n).getText().contains("threads-latest.json")),"An unreadable category reports its own failure without hiding other evidence");
                             capture(window.getScene(),"diagnostics-source-error");
                             active.set(null);pane.refreshEvidence();
                             require(threads.getItems().isEmpty()&&chart.getData().isEmpty(),"Returning to no current session clears historical rows and chart");
