@@ -152,3 +152,19 @@ JFR 帧缺少方法元数据时保留未知帧占位，在 `limits.unresolvedFra
 本地证据位于 `monitor-cli/build/desktop-soak/run-20261102-c/verification-summary.json`、同目录的 `resources.jsonl` 与采集会话，以及 `monitor-app/build/ui-soak/2026-11-02T06-40-25.540407Z/`；静止收尾证据位于 `monitor-cli/build/desktop-soak/run-20261102-quiescent/`。这些 build 产物不随 Git 分发。
 
 Linux/ARM64 的 Xvfb 1.5 scale 隔离检查通过了部分控件与大数据场景，但共享的 4GiB Colima 出现 OOM / 停滞，最终停止了本任务自己的容器，未完整通过。Windows 和 VoiceOver / NVDA / Orca 的实际朗读未在本机执行；三平台 CI 入口及可访问名称 / 键盘检查已准备，不能把未执行项标成通过。
+
+### 本轮补充验收（2026-11-02）
+
+证据联动、诊断任务取消 / 重试、实验 A/B 绑定及原生分发已完成。取消 JFR 的集成回归确认只关闭本任务创建的录制，保留另一条测试录制及目标 JVM；清理失败不能显示取消成功。表格清空后重新加载同一源、切换选中行时清除旧详情、未确认停止时阻断实验绑定均有控件回归。
+
+本机最终 `check`、App shadow JAR 和 CLI 分发构建成功；Java XML 合计 186 项、失败 / 错误 / 跳过均为 0（Gradle 31 项任务，9 项执行、22 项复用）。Python 工作流与长采集验收器 45 项通过，UI / diagnostics 预览均为零失败。
+
+[远端三平台验证](https://github.com/MrLawrenc/lawrence-agent/actions/runs/41446750100) 的 6 项矩阵全部通过，包含 Java 回归、控件交互、真实诊断证据渲染和平台候选包构建。Windows / Linux 实测输出 scale 1.0 / 1.5；macOS CI 记录原生 1.0，本机记录原生 2.0，不能把 macOS 参数矩阵误称为已强制切换显示缩放。Windows 不执行 POSIX SIGTERM 专项，正常定时采集与停止还原仍在 Windows 实测。修复了 Windows 索引换行字节估算、缺失 JFR 方法元数据及长规则挤压类表的问题；Windows 1.5 scale 的类表在最小窗口中恢复至约 117 个逻辑像素。
+
+本轮长采集使用 3660 秒的 CLI 单调计时配置，退出 0，`captureComplete=true`、`analysisReady=true`、`restored=true`；接收 / 接受 / 原始写入均为 68744 个 Span，未交付、丢弃、拒绝及重复均为 0，16 个滚动窗口归档完整。目标在停止后存活，确认还原后才结束自建目标。诊断完成 1801 个指标样本、362 个线程快照，无采样失败和错误。
+
+机器期间发生休眠 / 恢复，墙钟用时约 8402 秒、最大资源采样空档约 980 秒，诊断保留 5 处空档。这是采集完整性通过，不能作为连续无间断稳定运行的证明。该轮已启动的旧版 harness 未单独记录活跃计时字段，验收依据为配置的 CLI 单调截止时间、目标存活且无预算提前终止，以及成功收尾回执；新 harness 已增加活跃计时、分发 SHA256 与 macOS 防空闲休眠辅助进程。最终重建 CLI 另做 20 秒配置短采，退出 0、完整且已还原，READY 至结果的单调生命周期用时约 21.6 秒（包含停止收尾），辅助进程也已释放。
+
+本机证据分别位于 `monitor-cli/build/desktop-soak/run-20261102-complete/verification-summary.json`、`monitor-cli/build/desktop-soak/run-20261102-final-cli/verification-summary.json`。长采集使用启动时复制的分发；后续最终分发由完整回归及短采验证，不能把两次采集混为同一个二进制版本的运行。UI 长时记录仍为前述独立轮次，本次 capture_only 验收不重复声明 UI 小时级通过。
+
+实际 VoiceOver 朗读仍未通过本轮验收：已观察到原生可访问树中的主题、字号和密度控件名称 / 角色，但系统设置受账户验证弹窗阻挡，随后系统控制工具报告 Mac 已锁定。需要用户手动解锁并处理弹窗后继续；未修改账户凭据或扩大权限，不以可访问树检查代替实际朗读。原生预览证据保留于 `monitor-app/build/accessibility/result.json`。
