@@ -30,21 +30,14 @@ class MonitorCliTest {
         assertEquals(500, MonitorCli.duration("500ms")); assertEquals(60_000, MonitorCli.duration("1m"));
         assertThrows(IllegalArgumentException.class, () -> MonitorCli.duration("0s"));
     }
-    @Test void packagedClasspathCapturesARealJvmReanalyzesReadOnlyAndRestoresOnSigterm() throws Exception {
+    @Test void packagedClasspathCapturesARealJvmAndReanalyzesReadOnly() throws Exception {
         Process target = new ProcessBuilder(java(), "-cp", Path.of("build/classes/java/test").toAbsolutePath().toString(),
                 "agentfixtures.clipipeline.TargetLoop").redirectErrorStream(true).start();
         var targetIn = new BufferedReader(new InputStreamReader(target.getInputStream()));
         var targetOut = new PrintWriter(target.getOutputStream(), true);
         try {
             assertEquals("READY", targetIn.readLine());
-            var d = MonitoringConfig.defaults();
-            var config = new MonitoringConfig(2,
-                    new MonitoringConfig.Scope(List.of(), List.of("agentfixtures.clipipeline.TargetLoop"), List.of(), List.of("main")),
-                    new MonitoringConfig.Sampling(100, 50, 512, 1, MonitoringConfig.TailOverflowPolicy.PROMOTE),
-                    new MonitoringConfig.Output(directory.resolve("captures").toString(), d.output().exporters(),
-                            new MonitoringConfig.Capture(false, false, false), d.output().spanFiles(), d.output().retention()),
-                    d.resource(), new MonitoringConfig.Dependencies(false, false), d.analysis());
-            Path yaml = directory.resolve("monitor.yml"); Files.writeString(yaml, MonitoringConfigYaml.write(config));
+            Path yaml = writeCaptureConfig();
             Path stdout = directory.resolve("capture.json"), stderr = directory.resolve("capture.log");
             Process cli = capture(target.pid(), yaml, "1500ms", stdout, stderr);
             try {
@@ -63,6 +56,18 @@ class MonitorCliTest {
             JsonNode analysis = JSON.readTree(analyzedOut.toString());
             assertTrue(analysis.path("readOnly").asBoolean()); assertEquals(3, analysis.path("report").path("observedRootTraces").asInt());
             assertArrayEquals(before, Files.readAllBytes(session.resolve("reports/performance-report.json")));
+        } finally { targetOut.println("EXIT"); if (!target.waitFor(3, TimeUnit.SECONDS)) target.destroyForcibly(); }
+    }
+    @Test @org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void posixSigtermRestoresBytecodeBeforeCliExit() throws Exception {
+        // Windows Process.destroy uses TerminateProcess and does not deliver a POSIX signal.
+        Process target = new ProcessBuilder(java(), "-cp", Path.of("build/classes/java/test").toAbsolutePath().toString(),
+                "agentfixtures.clipipeline.TargetLoop").redirectErrorStream(true).start();
+        var targetIn = new BufferedReader(new InputStreamReader(target.getInputStream()));
+        var targetOut = new PrintWriter(target.getOutputStream(), true);
+        try {
+            assertEquals("READY", targetIn.readLine());
+            Path yaml = writeCaptureConfig();
             Path stoppedLog = directory.resolve("interrupted.log");
             Process interrupted = capture(target.pid(), yaml, "60s", directory.resolve("interrupted.json"), stoppedLog);
             try {
@@ -75,6 +80,17 @@ class MonitorCliTest {
                 assertTrue(target.isAlive());
             } finally { if (interrupted.isAlive()) interrupted.destroyForcibly(); }
         } finally { targetOut.println("EXIT"); if (!target.waitFor(3, TimeUnit.SECONDS)) target.destroyForcibly(); }
+    }
+    private Path writeCaptureConfig() throws IOException {
+        var d = MonitoringConfig.defaults();
+        var config = new MonitoringConfig(2,
+                new MonitoringConfig.Scope(List.of(), List.of("agentfixtures.clipipeline.TargetLoop"), List.of(), List.of("main")),
+                new MonitoringConfig.Sampling(100, 50, 512, 1, MonitoringConfig.TailOverflowPolicy.PROMOTE),
+                new MonitoringConfig.Output(directory.resolve("captures").toString(), d.output().exporters(),
+                    new MonitoringConfig.Capture(false, false, false), d.output().spanFiles(), d.output().retention()),
+                d.resource(), new MonitoringConfig.Dependencies(false, false), d.analysis());
+        Path yaml = directory.resolve("monitor.yml"); Files.writeString(yaml, MonitoringConfigYaml.write(config));
+        return yaml;
     }
     private Process capture(long pid, Path yaml, String duration, Path stdout, Path stderr) throws IOException {
         return new ProcessBuilder(java(), "--add-modules", "jdk.attach", "-Dagent.monitor.leaseDir=" + directory.resolve("leases"),

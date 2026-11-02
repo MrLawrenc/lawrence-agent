@@ -60,6 +60,10 @@ tasks.register('packageMacApp', Exec) {
     description = 'Builds a native macOS .app bundle with the Agent Monitor icon.'
     dependsOn tasks.named('installDist')
     inputs.file(macIcon)
+    inputs.files(tasks.named("installDist").map { it.outputs.files })
+    inputs.property("runtimeJavaHome", System.getProperty("java.home"))
+    inputs.property("runtimeJavaVersion", System.getProperty("java.version"))
+    inputs.property("applicationVersion", project.version.toString())
     outputs.dir(macAppOutput)
 
     doFirst {
@@ -104,6 +108,10 @@ tasks.register('packageWindowsApp', Exec) {
     description = 'Builds a native Windows app-image with the Agent Monitor icon.'
     dependsOn tasks.named('installDist')
     inputs.file(windowsIcon)
+    inputs.files(tasks.named("installDist").map { it.outputs.files })
+    inputs.property("runtimeJavaHome", System.getProperty("java.home"))
+    inputs.property("runtimeJavaVersion", System.getProperty("java.version"))
+    inputs.property("applicationVersion", project.version.toString())
     outputs.dir(windowsAppOutput)
 
     doFirst {

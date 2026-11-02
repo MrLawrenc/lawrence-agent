@@ -50,6 +50,17 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./gradlew.bat :monitor-app:uiPreview --args=--verify :monitor-app:diagnosticsPreview -PuiScale=${{ matrix.scale }} --console=plain --max-workers=1
+      - name: Build platform release candidate
+        if: matrix.scale == '1.0'
+        shell: bash
+        run: python3 scripts/package-candidate.py --output build/platform-candidate
+      - name: Preserve platform candidate
+        if: success() && matrix.scale == '1.0'
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-${{ matrix.os }}
+          path: build/platform-candidate
+          retention-days: 7
       - name: Preserve renders and checks
         if: always()
         uses: actions/upload-artifact@v7

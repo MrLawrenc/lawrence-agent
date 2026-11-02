@@ -57,6 +57,8 @@ Windows 请在 Windows 的 Git Bash 中执行：
 
 产物位于项目根目录的 `app/Agent Monitor/Agent Monitor.exe`，使用 `icon.ico` 生成资源管理器和任务栏图标。Windows 安装包必须在 Windows 环境中打包，不能从 macOS 交叉生成。
 
+发布候选包可执行 `python3 scripts/package-candidate.py`，在新的 `build/release-candidates/` 子目录收集 App / CLI 分发、当前平台原生应用、源提交信息和 SHA256 校验值；打包不代表测试已通过。原生图标由现有 PNG 保持像素不变地封装，更新 PNG 后运行 `python3 scripts/generate-native-icons.py`，可用 `--check` 检查格式文件是否同步。
+
 ### CLI：无界面采集与离线分析
 
 配置初始化/校验、范围预览、会话目录和原生 AI 输出验收，详见 [CLI 工作流](docs/cli-workflow.md)。

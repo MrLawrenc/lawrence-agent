@@ -101,3 +101,5 @@ Python 兼容工具 `scripts/verify-ai-analysis.py` 同步保留质量、诊断-
 最终共享回归与构建全部通过：Agent 60、core 54、CLI 6、model 6，共 126 项 Java 测试零失败；包括默认主机名下的真实 CLI 采集、SIGTERM 还原、诊断收尾超时及报告摘要一致性。App 与 CLI 分发包均已更新。
 
 最新 CLI 安装包再次执行配置创建/校验、会话 list/show、IDEA 范围预览、真实 AI 引用通过和篡改拒绝，9 个检查全部符合预期。实测 JSON 在 `monitor-cli/build/verification/workflow-final-imx91yfb/`，不进入 Git。诊断验证范围见 [诊断文档](diagnostics.md)，当前回归入口见 [AI 协作指引](../AGENTS.md)。
+
+Windows 的 `Process.destroy()` 使用强制进程终止语义，不等价于 POSIX SIGTERM，不保证执行 JVM shutdown hook。跨平台验收均检查正常时长结束后的采集完整性与字节码还原；SIGTERM 子进程测试仅在非 Windows 系统运行。Windows 应通过桌面停止、正常控制台 Ctrl-C 或受控采集时长收尾，不能把外部强制结束进程当作还原确认。
