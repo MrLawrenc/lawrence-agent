@@ -21,6 +21,12 @@ public final class SessionComparison {
                 "beforeConfig",a.path("monitoringConfig"),"afterConfig",b.path("monitoringConfig")));
         result.put("comparisonMode",strict?"strict":"observed");result.put("comparability",Map.of("eligible",eligibility.isEmpty(),"reasons",eligibility,"basis","Declared workload context, capture quality, environment and configuration; does not verify actual traffic or prove optimization."));result.put("optimizationProven",false);return result;
     }
+    public List<String> eligibility(Path session) throws Exception {
+        DiagnosticTask.phase("核验基线会话完整性与比较条件", true);
+        JsonNode report=read(session);
+        new com.agentmonitor.core.catalog.SessionCatalog().show(session);
+        return eligibility(session,session,report,report).stream().distinct().toList();
+    }
     private static List<String> eligibility(Path before,Path after,JsonNode a,JsonNode b)throws Exception {
         List<String> reasons=new ArrayList<>();
         for(JsonNode report:List.of(a,b))if(!completeQuality(report))reasons.add("capture_complete_and_analysis_ready_required:"+report.path("sessionId").asText());
@@ -60,6 +66,7 @@ public final class SessionComparison {
         Map<String,JsonNode> left=new LinkedHashMap<>(),right=new LinkedHashMap<>(); a.forEach(n->left.put(n.path(key).asText(),n)); b.forEach(n->right.put(n.path(key).asText(),n));
         Set<String> keys=new TreeSet<>(left.keySet());keys.addAll(right.keySet());List<Map<String,Object>> output=new ArrayList<>();
         for(String k:keys) {
+            DiagnosticTask.checkpoint();
             JsonNode x=left.get(k),y=right.get(k);Map<String,Object> row=new LinkedHashMap<>();row.put("key",k);
             row.put("before",x);row.put("after",y);
             if(derive&&x!=null&&y!=null&&x.path("observedCalls").asLong()>0&&y.path("observedCalls").asLong()>0) {
@@ -78,7 +85,8 @@ public final class SessionComparison {
         Map<String,JsonNode> left=new LinkedHashMap<>(),right=new LinkedHashMap<>();
         a.path("classes").forEach(n->left.put(n.path("class").asText(),n));b.path("classes").forEach(n->right.put(n.path("class").asText(),n));
         Set<String> keys=new TreeSet<>(left.keySet());keys.addAll(right.keySet());List<Map<String,Object>> rows=new ArrayList<>();
-        for(String k:keys) { JsonNode x=left.getOrDefault(k,JSON.createObjectNode()),y=right.getOrDefault(k,JSON.createObjectNode());
+        for(String k:keys) {
+            DiagnosticTask.checkpoint(); JsonNode x=left.getOrDefault(k,JSON.createObjectNode()),y=right.getOrDefault(k,JSON.createObjectNode());
             Map<String,Object> row=new LinkedHashMap<>();row.put("class",k);row.put("beforeObserved",left.containsKey(k));row.put("afterObserved",right.containsKey(k));
             if(left.containsKey(k)&&right.containsKey(k)){row.put("instancesDelta",y.path("instances").asLong()-x.path("instances").asLong());row.put("bytesDelta",y.path("bytes").asLong()-x.path("bytes").asLong());}rows.add(row); }
         rows.sort(Comparator.<Map<String,Object>>comparingLong(m->((Number)m.getOrDefault("bytesDelta",0L)).longValue()).reversed());

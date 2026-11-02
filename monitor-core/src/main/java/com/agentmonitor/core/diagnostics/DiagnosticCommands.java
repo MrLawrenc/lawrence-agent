@@ -32,10 +32,12 @@ public final class DiagnosticCommands {
             JFR records a bounded 120s/32MiB ring; histogram --live may request a full GC; heap dumps may pause the target.
             """;}
     public static Object execute(String[] args)throws Exception{
+        DiagnosticTask.phase("校验诊断参数", true);
         if(args.length==0||!supports(args[0]))throw new IllegalArgumentException("Unknown diagnostic command");
         if(args[0].equals("compare")){
             var o=options(args,1,Set.of("before","after","kind","output"),Set.of("observed"));
             String kind=o.getOrDefault("kind","session");if(!Set.of("session","histogram").contains(kind))throw new IllegalArgumentException("--kind: session|histogram");
+            DiagnosticTask.phase("核验会话与比较证据", true);
             var comparison=new SessionComparison();Object result=kind.equals("histogram")?comparison.compareHistograms(path(o,"before"),path(o,"after")):comparison.compare(path(o,"before"),path(o,"after"),!o.containsKey("observed"));
             return save(o,result);
         }
@@ -48,7 +50,7 @@ public final class DiagnosticCommands {
                 if(!live.path("status").asText().equals("RUNNING")||System.currentTimeMillis()-live.path("timestampMillis").asLong()>5000)throw new IllegalArgumentException("类来源刷新需要仍在采集的活动会话");
                 long previous=Files.isRegularFile(file)?Files.getLastModifiedTime(file).toMillis():0;
                 AtomicFiles.write(logs.resolve("class-origin-refresh.request"),"refresh");long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10);
-                while((!Files.isRegularFile(file)||Files.getLastModifiedTime(file).toMillis()<=previous)&&System.nanoTime()<deadline)Thread.sleep(100);
+                while((!Files.isRegularFile(file)||Files.getLastModifiedTime(file).toMillis()<=previous)&&System.nanoTime()<deadline)DiagnosticTask.pause(100);
                 if(!Files.isRegularFile(file)||Files.getLastModifiedTime(file).toMillis()<=previous)throw new IllegalStateException("类来源刷新超时，原快照仍保留");
             }
             if(Files.size(file)>64L*1024*1024)throw new IllegalArgumentException("Class inventory exceeds 64MiB");
@@ -67,18 +69,21 @@ public final class DiagnosticCommands {
             var session=MonitoringSession.create(o.getOrDefault("output",MonitoringConfig.DEFAULT_SESSION_ROOT_DIRECTORY));
             AtomicFiles.write(session.sessionDirectory().resolve("ai-analysis-prompt.txt"),com.agentmonitor.core.report.SessionAnalysisPrompt.forSession(session));
             AtomicFiles.write(session.reportsDirectory().resolve("ai-analysis-output.schema.json"),com.agentmonitor.core.report.SessionAnalysisPrompt.outputSchema());
+            DiagnosticTask.phase("启动独立诊断采集", false);
             try(var recorder=new DiagnosticRecorder(pid,config,session)){
                 Thread hook=new Thread(recorder::close,"diagnostics-cli-close");Runtime.getRuntime().addShutdownHook(hook);
-                try{recorder.start();if(recorder.awaitFirstSample(20_000))waitDuration(pid,duration);}finally{recorder.close();Runtime.getRuntime().removeShutdownHook(hook);}
+                try{recorder.start();if(recorder.awaitFirstSample(20_000)){DiagnosticTask.phase("连续采集诊断", true);waitDuration(pid,duration);}}finally{recorder.close();Runtime.getRuntime().removeShutdownHook(hook);}
             }
             return Map.of("sessionDirectory",session.sessionDirectory().toString(),"diagnosticsOnly",true,"manifest",JSON.readTree(session.sessionDirectory().resolve("diagnostics/manifest.json").toFile()));
         }
         Set<String> allowed=switch(action){case "snapshot","environment","pools"->Set.of("pid","output");case "threads"->Set.of("pid","count","interval","output");case "histogram","heap-dump"->Set.of("pid","output");default->throw new IllegalArgumentException("Unknown diag action: "+action);};
         var o=options(args,2,allowed,action.equals("histogram")?Set.of("live"):Set.of());
+        DiagnosticTask.phase("连接目标 JVM", false);
         try(var target=new TargetJvm(required(o,"pid"))){
+            DiagnosticTask.phase("读取目标诊断 · "+action, false);
             Object result=switch(action){
                 case "snapshot"->target.sample();case "environment"->target.environment();case "pools"->target.pools();
-                case "threads"->{int count=Integer.parseInt(o.getOrDefault("count","3"));if(count<1||count>30)throw new IllegalArgumentException("--count: 1–30");long interval=duration(o.getOrDefault("interval","1s"));if(interval>60_000)throw new IllegalArgumentException("--interval <= 60s");List<Map<String,Object>> snapshots=new ArrayList<>();for(int i=0;i<count;i++){if(i>0)Thread.sleep(interval);snapshots.add(target.threads());}yield Map.of("snapshots",snapshots,"comparison",compareThreads(snapshots));}
+                case "threads"->{int count=Integer.parseInt(o.getOrDefault("count","3"));if(count<1||count>30)throw new IllegalArgumentException("--count: 1–30");long interval=duration(o.getOrDefault("interval","1s"));if(interval>60_000)throw new IllegalArgumentException("--interval <= 60s");List<Map<String,Object>> snapshots=new ArrayList<>();for(int i=0;i<count;i++){if(i>0){DiagnosticTask.phase("等待下一次线程快照", true);DiagnosticTask.pause(interval);}DiagnosticTask.phase("读取线程快照 "+(i+1)+" / "+count, false);snapshots.add(target.threads());}yield Map.of("snapshots",snapshots,"comparison",compareThreads(snapshots));}
                 case "histogram"->{required(o,"output");yield target.histogram(o.containsKey("live"));}
                 case "heap-dump"->{Path output=path(o,"output");String message=target.heapDump(output);boolean created=Files.isRegularFile(output)&&Files.size(output)>0;if(!created)throw new IllegalStateException("Heap dump 未生成: "+message);yield Map.of("path",output.toAbsolutePath().toString(),"message",message,"bytes",Files.size(output));}
                 default->throw new IllegalArgumentException(action);
@@ -95,6 +100,7 @@ public final class DiagnosticCommands {
             if(Files.exists(output))throw new IllegalArgumentException("输出已存在: "+output);Files.createDirectories(output.getParent());
             String pid=required(o,"pid");if(Long.parseLong(pid)<=0||Long.parseLong(pid)==ProcessHandle.current().pid())throw new IllegalArgumentException("需要外部 JVM PID");
             Path log=Files.createTempFile("agent-profiler-",".log");Process process=null;
+            DiagnosticTask.phase("运行 async-profiler（目标端操作结束后响应取消）", false);
             try{process=new ProcessBuilder(binary.toString(),"-e",event,"-d",Long.toString(Math.max(1,(millis+999)/1000)),"-f",output.toString(),pid).redirectErrorStream(true).redirectOutput(log.toFile()).start();
                 if(!process.waitFor(millis+30_000,TimeUnit.MILLISECONDS)){process.destroyForcibly();throw new IllegalStateException("async-profiler 超时");}
                 String text;try(var input=Files.newInputStream(log)){text=new String(input.readNBytes(8192),java.nio.charset.StandardCharsets.UTF_8);}if(process.exitValue()!=0||!Files.isRegularFile(output))throw new IllegalStateException("async-profiler: "+text.substring(0,Math.min(8192,text.length())));
@@ -105,8 +111,9 @@ public final class DiagnosticCommands {
         var o=options(args,2,Set.of("pid","duration","output"),Set.of("exceptions"));Path directory=path(o,"output");Files.createDirectories(directory);
         Path recording=directory.resolve("profile.jfr");if(Files.exists(recording))throw new IllegalArgumentException("输出已存在: "+recording);
         long millis=duration(o.getOrDefault("duration","30s"));String pid=required(o,"pid");
-        try(var target=new TargetJvm(pid);var profiler=new JfrProfiler(target,o.containsKey("exceptions"))){waitDuration(pid,millis);profiler.dump(recording);}
-        new JfrAnalysis().export(recording,directory);return Map.of("recording",recording.toAbsolutePath().toString(),"analysis",directory.resolve("jfr-analysis.json").toAbsolutePath().toString(),"flamegraph",directory.resolve("flamegraph.html").toAbsolutePath().toString());
+        DiagnosticTask.phase("启动本次 JFR 录制", false);
+        try(var target=new TargetJvm(pid);var profiler=new JfrProfiler(target,o.containsKey("exceptions"))){DiagnosticTask.phase("录制 JFR", true);waitDuration(pid,millis);DiagnosticTask.phase("导出本次 JFR", false);profiler.dump(recording);}
+        DiagnosticTask.phase("分析 JFR", true);new JfrAnalysis().export(recording,directory);return Map.of("recording",recording.toAbsolutePath().toString(),"analysis",directory.resolve("jfr-analysis.json").toAbsolutePath().toString(),"flamegraph",directory.resolve("flamegraph.html").toAbsolutePath().toString());
     }
     private static Object compareThreads(List<Map<String,Object>> snapshots){
         if(snapshots.size()<2)return Map.of("unchangedStackThreadIds",List.of());
@@ -118,6 +125,6 @@ public final class DiagnosticCommands {
     private static Path path(Map<String,String> o,String key){return Path.of(required(o,key));}
     private static String required(Map<String,String> o,String key){String value=o.get(key);if(value==null||value.isBlank())throw new IllegalArgumentException("Missing --"+key);return value;}
     private static long duration(String text){if(!text.matches("[0-9]+(ms|s|m)"))throw new IllegalArgumentException("Duration: ms|s|m");int suffix=text.endsWith("ms")?2:1;long value;try{value=Math.multiplyExact(Long.parseLong(text.substring(0,text.length()-suffix)),suffix==2?1:text.endsWith("s")?1000:60000);}catch(ArithmeticException e){throw new IllegalArgumentException("Duration too large");}if(value<500||value>3600000)throw new IllegalArgumentException("Duration: 500ms–60m");return value;}
-    private static void waitDuration(String pid,long millis)throws Exception{long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(millis);while(System.nanoTime()<deadline&&ProcessHandle.of(Long.parseLong(pid)).map(ProcessHandle::isAlive).orElse(false))Thread.sleep(100);}
+    private static void waitDuration(String pid,long millis)throws Exception{long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(millis);while(System.nanoTime()<deadline&&ProcessHandle.of(Long.parseLong(pid)).map(ProcessHandle::isAlive).orElse(false))DiagnosticTask.pause(100);}
     private static Map<String,String> options(String[] args,int start,Set<String> values,Set<String> flags){Map<String,String> o=new LinkedHashMap<>();for(int i=start;i<args.length;i++){String token=args[i];if(!token.startsWith("--"))throw new IllegalArgumentException("Unknown option: "+token);String key=token.substring(2);if(o.containsKey(key))throw new IllegalArgumentException("Duplicate --"+key);if(key.equals("json")||flags.contains(key)){o.put(key,"true");continue;}if(!values.contains(key)||++i>=args.length||args[i].startsWith("--"))throw new IllegalArgumentException("Unknown or missing option: "+token);o.put(key,args[i]);}return o;}
 }

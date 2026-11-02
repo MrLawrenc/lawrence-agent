@@ -40,4 +40,11 @@ class RollingArchiveTest {
         JsonNode found=null;for(JsonNode window:manifest.path("windows"))if(window.path("roots").asInt()>0)found=window;assertNotNull(found);assertEquals(1,found.path("crossWindowRoots").asInt());
         Path session=Path.of(found.path("sessionDirectory").asText());JsonNode report=json.readTree(session.resolve("reports/performance-report.json").toFile());assertFalse(report.path("captureComplete").asBoolean());assertEquals(2,report.path("analyzedSpans").asInt());assertEquals(2,Files.readAllLines(session.resolve("spans/rolling-spans.jsonl")).size());
     }
+    @Test void atomicTemporaryFilesDoNotEndTheCaptureBudgetScan()throws Exception{
+        var master=MonitoringSession.create(directory.toString());var running=new java.util.concurrent.atomic.AtomicBoolean(true);
+        Thread writer=new Thread(()->{int i=0;while(running.get()){try{Path temporary=master.sessionDirectory().resolve("sample-"+(i++%100)+".tmp");Files.writeString(temporary,"sample");Files.deleteIfExists(temporary);}catch(Exception ignored){}}});
+        try(var archive=new RollingCaptureArchive(master,MonitoringConfig.defaults(),60000,16L*1024*1024)){archive.start();writer.start();Thread.sleep(2300);assertFalse(archive.budgetReached(),"Atomic rename/delete of temporary files is normal, not a budget failure");}
+        finally{running.set(false);writer.join(3000);}
+    }
+
 }

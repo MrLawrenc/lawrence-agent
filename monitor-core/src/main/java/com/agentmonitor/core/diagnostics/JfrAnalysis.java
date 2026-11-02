@@ -10,6 +10,7 @@ import java.util.*;
 public final class JfrAnalysis {
     private static final ObjectMapper JSON = new ObjectMapper();
     public Map<String,Object> analyze(Path recording) throws Exception {
+        DiagnosticTask.phase("读取与聚合 JFR 事件", true);
         Map<String,Long> eventCounts = new TreeMap<>(); Map<String,Map<String,Long>> stacks = new TreeMap<>();
         List<Map<String,Object>> timeline=new ArrayList<>();long omittedTimeline=0;
         List<Map<String,Object>> pauses = new ArrayList<>(); Map<String,Long> exceptions = new LinkedHashMap<>();
@@ -17,6 +18,7 @@ public final class JfrAnalysis {
         long omittedStacks = 0, omittedPauses = 0, omittedExceptions = 0, events = 0; boolean eventLimit = false;
         try (RecordingFile input = new RecordingFile(recording)) {
             while (input.hasMoreEvents()) {
+                DiagnosticTask.checkpoint();
                 if (++events > 2_000_000) { eventLimit = true; break; }
                 RecordedEvent event = input.readEvent(); String name = event.getEventType().getName();
                 eventCounts.merge(name, 1L, Long::sum);
@@ -76,7 +78,7 @@ public final class JfrAnalysis {
         return String.join(";", names);
     }
     public Map<String,Object> export(Path recording, Path directory) throws Exception {
-        Map<String,Object> result = analyze(recording); Files.createDirectories(directory);
+        Map<String,Object> result = analyze(recording); DiagnosticTask.phase("写入 JFR 分析与火焰图", true); Files.createDirectories(directory);
         AtomicFiles.write(directory.resolve("jfr-analysis.json"),JSON.writerWithDefaultPrettyPrinter().writeValueAsString(result));
         String data = JSON.writeValueAsString(result.get("stacks")).replace("<", "\\u003c").replace("&", "\\u0026");
         String template;

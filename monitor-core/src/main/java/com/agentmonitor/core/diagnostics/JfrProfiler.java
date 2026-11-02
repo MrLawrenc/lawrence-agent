@@ -38,6 +38,7 @@ public final class JfrProfiler implements AutoCloseable {
             try (OutputStream out = Files.newOutputStream(temporary)) {
                 long bytes = 0;
                 for (byte[] block; (block = bean.readStream(stream)) != null;) {
+                    DiagnosticTask.checkpoint();
                     bytes += block.length; if (bytes > 128L*1024*1024) throw new IOException("JFR snapshot exceeds 128MiB");
                     out.write(block);
                 }

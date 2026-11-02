@@ -1,5 +1,7 @@
 package com.agentmonitor.core.evidence;
 
+import com.agentmonitor.core.diagnostics.DiagnosticTask;
+
 import com.agentmonitor.core.util.AtomicFiles;
 import com.fasterxml.jackson.core.*;
 import com.fasterxml.jackson.databind.*;
@@ -22,6 +24,7 @@ public final class EvidenceStore {
         IdentityMismatch(String message){super(message);}
     }
     public Map<String,Object> index(Path selected) throws Exception {
+        DiagnosticTask.phase("构建证据索引", true);
         Path root=selected.toRealPath();String id=identity(root);Path directory=root.resolve("evidence");Files.createDirectories(directory);
         String filename="index-"+UUID.randomUUID()+".jsonl";Path output=directory.resolve(filename);
         List<Map<String,Object>> sources=new ArrayList<>();List<String> errors=new ArrayList<>();
@@ -38,6 +41,7 @@ public final class EvidenceStore {
         Path requests=root.resolve("agent-logs/request-metrics.json");if(Files.isRegularFile(requests,LinkOption.NOFOLLOW_LINKS)&&!Files.isSymbolicLink(requests))files.add(requests);
         try(BufferedWriter writer=Files.newBufferedWriter(output,StandardOpenOption.CREATE_NEW)){
             for(Path selectedFile:files){
+                DiagnosticTask.phase("索引 "+selectedFile.getFileName(), true);
                 if(records[0]>=MAX_RECORDS||written[0]>=MAX_INDEX||processed[0]>=2L*1024*1024*1024){truncated[0]=true;break;}
                 Path file=safe(root,selectedFile);long size=Files.size(file),modified=Files.getLastModifiedTime(file).toMillis();
                 String relative=root.relativize(file).toString().replace('\\','/');
@@ -68,7 +72,7 @@ public final class EvidenceStore {
                         }else throw new IOException("Source must contain objects/arrays");
                     }
                     processed[0]+=Math.max(size,parser.currentLocation().getByteOffset());
-                }catch(IdentityMismatch mismatch){Files.deleteIfExists(staging);throw mismatch;}
+                }catch(IdentityMismatch | java.util.concurrent.CancellationException mismatch){Files.deleteIfExists(staging);throw mismatch;}
                 catch(Exception error){valid=false;records[0]=before;written[0]=bytesBefore;errors.add(relative+": "+error.getMessage());truncated[0]=true;}
                 try{
                     if(size!=Files.size(file)||modified!=Files.getLastModifiedTime(file).toMillis()||!hash.equals(sha(file)))throw new IOException("Source changed while indexing: "+relative);
@@ -100,6 +104,7 @@ public final class EvidenceStore {
         add(writer,id,file,line,pointer,value,records,bytes,fallbackStart,0);
     }
     private static void add(BufferedWriter writer,String id,String file,long line,String pointer,JsonNode value,int[] records,long[] bytes,long fallbackStart,long fallbackEnd)throws Exception {
+        DiagnosticTask.checkpoint();
         if(!value.isObject()||records[0]>=MAX_RECORDS||bytes[0]>=MAX_INDEX)return;
         checkIdentity(id,value);
         String trace=value.path("traceId").asText(),method=value.path("method").asText(value.path("rootMethod").asText());
@@ -163,12 +168,12 @@ public final class EvidenceStore {
     private JsonNode catalogOrBuild(Path root)throws Exception {if(!Files.isRegularFile(root.resolve("evidence/catalog.json")))index(root);return catalog(root);}
     private JsonNode catalog(Path root)throws Exception {Path path=root.resolve("evidence/catalog.json");if(!Files.isRegularFile(path))throw new IllegalArgumentException("Evidence index missing; run evidence index first");if(Files.size(path)>4L*1024*1024)throw new IOException("Catalog too large");JsonNode doc=JSON.readTree(safe(root,path).toFile());if(!doc.path("identityValidated").isBoolean()||!doc.path("identityValidated").asBoolean())throw new IllegalArgumentException("Old evidence index must be rebuilt");if(!identity(root).equals(doc.path("sessionId").asText()))throw new IllegalArgumentException("Index/session mismatch");return doc;}
     @FunctionalInterface private interface Visitor {void visit(JsonNode node)throws Exception;}
-    private static void rows(Path root,JsonNode catalog,Visitor visitor)throws Exception {Path file=safe(root,root.resolve("evidence").resolve(catalog.path("index").asText()));if(Files.size(file)>MAX_INDEX+65536||!sha(file).equals(catalog.path("indexSha256").asText()))throw new IOException("Index integrity check failed");try(JsonParser parser=JSON.getFactory().createParser(file.toFile())){while(parser.nextToken()!=null)visitor.visit(readRecord(parser));}}
+    private static void rows(Path root,JsonNode catalog,Visitor visitor)throws Exception {Path file=safe(root,root.resolve("evidence").resolve(catalog.path("index").asText()));if(Files.size(file)>MAX_INDEX+65536||!sha(file).equals(catalog.path("indexSha256").asText()))throw new IOException("Index integrity check failed");try(JsonParser parser=JSON.getFactory().createParser(file.toFile())){while(parser.nextToken()!=null){DiagnosticTask.checkpoint();visitor.visit(readRecord(parser));}}}
     private static void verifySource(Path root,JsonNode catalog,String relative)throws Exception {for(JsonNode source:catalog.path("sources"))if(source.path("file").asText().equals(relative)){if(!sha(safe(root,root.resolve(relative))).equals(source.path("sha256").asText()))throw new IllegalArgumentException("Source hash changed; rebuild index");return;}throw new IllegalArgumentException("Source absent from catalog");}
     private static String identity(Path root)throws Exception {Path p=safe(root,root.resolve("session.json"));if(Files.size(p)>65536)throw new IOException("Session marker too large");JsonNode n=JSON.readTree(p.toFile());String id=n.path("sessionId").asText();if(id.isBlank())throw new IllegalArgumentException("Missing session identity");return id;}
     private static Path safe(Path root,Path file)throws IOException {Path actual=file.toRealPath();if(!actual.startsWith(root)||!Files.isRegularFile(actual))throw new IllegalArgumentException("Evidence path escapes session or is not a file");return actual;}
     private static InputStream open(Path file)throws IOException {InputStream raw=Files.newInputStream(file);try{return limited(file.toString().endsWith(".gz")?new GZIPInputStream(raw):raw,MAX_SOURCE);}catch(IOException e){raw.close();throw e;}}
     private static InputStream limited(InputStream source,long maximum){return new FilterInputStream(source){long count;private void add(long n)throws IOException{if(n>0&&(count+=n)>maximum)throw new IOException("Evidence source exceeds 128MiB decompressed");}public int read()throws IOException{int b=in.read();if(b>=0)add(1);return b;}public int read(byte[] b,int o,int l)throws IOException{int n=in.read(b,o,l);add(n);return n;}};}
-    private static String sha(Path file)throws Exception {if(Files.size(file)>MAX_SOURCE)throw new IOException("Source exceeds 128MiB");MessageDigest digest=MessageDigest.getInstance("SHA-256");try(InputStream in=Files.newInputStream(file)){byte[] b=new byte[65536];for(int n;(n=in.read(b))!=-1;)digest.update(b,0,n);}return HexFormat.of().formatHex(digest.digest());}
+    private static String sha(Path file)throws Exception {if(Files.size(file)>MAX_SOURCE)throw new IOException("Source exceeds 128MiB");MessageDigest digest=MessageDigest.getInstance("SHA-256");try(InputStream in=Files.newInputStream(file)){byte[] b=new byte[65536];for(int n;(n=in.read(b))!=-1;){DiagnosticTask.checkpoint();digest.update(b,0,n);}}return HexFormat.of().formatHex(digest.digest());}
     private static String shaBytes(byte[] value)throws Exception{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));}
 }

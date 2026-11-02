@@ -41,4 +41,21 @@ class OfflineTraceReplayLoaderTest {
         assertTrue(replay.roots().get(0).getAttributes().get("otel.events").contains("IllegalStateException"));
     }
 
+    @Test void rollingJsonlReplaysOutOfOrderChildrenAndRejectsForeignRecords()throws Exception{
+        Files.writeString(directory.resolve("session.json"),"{\"sessionId\":\"window\"}");Path spans=Files.createDirectory(directory.resolve("spans"));
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();var rows=new java.util.ArrayList<String>();
+        for(String[] values:java.util.List.of(new String[]{"window","child","root","BUSINESS"},new String[]{"window","root","","HTTP_SERVER"},new String[]{"foreign","bad","","BUSINESS"})){
+            var row=json.createObjectNode();row.put("sessionId",values[0]);row.put("traceId","trace");row.put("method","example.Service#work()V ["+values[3]+"]");row.put("threadName","request");row.put("durationNanos",1000000);row.put("startedAtEpochMillis",123);row.putObject("attributes").put("agent.span.id",values[1]).put("agent.span.parent_id",values[2]);rows.add(row.toString());
+        }
+        Files.writeString(spans.resolve("rolling-spans.jsonl"),String.join("\n",rows)+"\n");assertTrue(OfflineTraceReplayLoader.hasReplayFiles(directory));var result=new OfflineTraceReplayLoader().load(directory);assertEquals(2,result.acceptedSpans());assertEquals(1,result.roots().size());assertEquals(1,result.roots().get(0).getChildren().size());assertTrue(result.warnings().stream().anyMatch(w->w.contains("会话身份")));
+    }
+
+    @Test void rollingRemoteParentRemainsALocalRoot()throws Exception{
+        Files.writeString(directory.resolve("session.json"),"{\"sessionId\":\"window\"}");Files.writeString(directory.resolve("rolling-spans.jsonl"),"{\"sessionId\":\"window\",\"traceId\":\"trace\",\"method\":\"example.Controller#request()V [HTTP_SERVER]\",\"durationNanos\":10,\"attributes\":{\"agent.span.id\":\"server\",\"agent.span.parent_id\":\"remote\",\"agent.remote_parent\":\"true\"}}\n");var result=new OfflineTraceReplayLoader().load(directory);assertEquals(1,result.roots().size());assertEquals(0,result.orphanSpans());assertEquals("remote",result.roots().get(0).getAttributes().get("agent.span.parent_id"));
+    }
+
+    @Test void rollingOversizedLineStopsThatFileWithAnExplicitWarning()throws Exception{
+        Files.writeString(directory.resolve("session.json"),"{\"sessionId\":\"window\"}");Files.writeString(directory.resolve("rolling-spans.jsonl"),"x".repeat(4*1024*1024+10)+"\n");var result=new OfflineTraceReplayLoader().load(directory);assertEquals(0,result.acceptedSpans());assertTrue(result.warnings().stream().anyMatch(w->w.contains("4Mi 字符")&&w.contains("余下记录")));
+    }
+
 }

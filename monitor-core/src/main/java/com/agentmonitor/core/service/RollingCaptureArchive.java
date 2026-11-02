@@ -48,7 +48,11 @@ public final class RollingCaptureArchive implements AutoCloseable {
             long now=System.currentTimeMillis();
             if(now-windowStarted>=windowMillis){finishWindow();openWindow();manifest("RUNNING");}
             if(now-lastBudgetCheck>=2000){lastBudgetCheck=now;long bytes=0;
-                try(var paths=Files.walk(master.sessionDirectory())){for(var iterator=paths.iterator();iterator.hasNext();){Path p=iterator.next();if(Files.isRegularFile(p,LinkOption.NOFOLLOW_LINKS))bytes+=Files.size(p);if(bytes>=maxBytes)break;}}
+                final long[] usage={0};
+                Files.walkFileTree(master.sessionDirectory(),new SimpleFileVisitor<>(){
+                    @Override public FileVisitResult visitFile(Path file,java.nio.file.attribute.BasicFileAttributes attrs){if(attrs.isRegularFile()&&!file.getFileName().toString().endsWith(".tmp"))usage[0]+=attrs.size();return usage[0]>=maxBytes?FileVisitResult.TERMINATE:FileVisitResult.CONTINUE;}
+                    @Override public FileVisitResult visitFileFailed(Path file,java.io.IOException error)throws java.io.IOException{if(error instanceof NoSuchFileException)return FileVisitResult.CONTINUE;throw error;}
+                });bytes=usage[0];
                 if(bytes>=maxBytes||Files.getFileStore(master.sessionDirectory()).getUsableSpace()<128L*1024*1024){budgetReached=true;manifest("BUDGET_REACHED");}
             }
         }catch(Exception e){if(errors.size()<100)errors.add(e.toString());budgetReached=true;try{manifest("FAILED");}catch(Exception ignored){}}
