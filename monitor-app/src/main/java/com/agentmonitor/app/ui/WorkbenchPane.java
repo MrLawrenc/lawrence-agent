@@ -39,10 +39,10 @@ public final class WorkbenchPane extends BorderPane {
         description.getStyleClass().add("workbench-description");
         description.setWrapText(true);
         Region headingSpace = new Region(); HBox.setHgrow(headingSpace, Priority.ALWAYS);
-        HBox titleRow = new HBox(16, title, headingSpace, pageActions);
+        javafx.scene.layout.FlowPane titleRow = new javafx.scene.layout.FlowPane(16,8,title,pageActions);
         titleRow.setAlignment(Pos.CENTER_LEFT);
         pageActions.setAlignment(Pos.CENTER_RIGHT);
-        pageActions.setMinWidth(Region.USE_PREF_SIZE);
+        pageActions.setMinWidth(0);
         VBox heading = new VBox(5, titleRow, description);
         heading.getStyleClass().add("workbench-heading");
         page.setTop(heading);

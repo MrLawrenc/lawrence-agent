@@ -20,6 +20,7 @@ public final class UIWorkbenchPreview extends Application {
         Scene scene = new Scene(controller.getRoot(), 1440, 900);
         scene.getStylesheets().add(getClass().getResource("/com/agentmonitor/app/main.css").toExternalForm());
         stage.setScene(scene); stage.setOnCloseRequest(e -> controller.onWindowClose()); stage.show();
+        System.out.println("UI_OUTPUT_SCALE="+stage.getOutputScaleX()+"x"+stage.getOutputScaleY()+"; render="+stage.getRenderScaleX()+"x"+stage.getRenderScaleY());
         Label status=(Label)scene.lookup(".status-label");
         ((Button)scene.lookup("#capture-start")).setOnAction(e -> status.setText("示例预览不会启动采集，也不会连接真实 JVM。"));
         ((Button)scene.lookup("#capture-stop")).setOnAction(e -> status.setText("示例预览：没有运行中的采集。"));

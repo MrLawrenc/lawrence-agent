@@ -14,6 +14,7 @@ import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
+import javafx.scene.control.SplitPane;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
@@ -29,7 +30,7 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 
-public class CallTreePane extends VBox {
+public class CallTreePane extends VBox implements AutoCloseable {
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     /** Keep the output dialog readable when a captured call tree is deeply nested. */
@@ -44,6 +45,10 @@ public class CallTreePane extends VBox {
     private final javafx.scene.control.SplitPane contentSplit=new javafx.scene.control.SplitPane();
     private final CallDetailPane detailPane;
     private final Button detailsToggle=new Button("调用详情");
+    private VBox waterfallView;
+    private final Button waterfall=new Button("瀑布图");
+    private final Button evidenceFocus=new Button("关联证据");
+    private java.util.function.Consumer<CallNode> onEvidenceFocus;
     private CallNode inspectedNode;
     private boolean rebuildingRows;
     private final Label emptyTitle;
@@ -54,6 +59,26 @@ public class CallTreePane extends VBox {
     private volatile boolean outputPaused = false;
     /** Online and offline data share the renderer, but the latter has no stream to pause. */
     private String titlePrefix = "调用链";
+    private List<com.agentmonitor.model.trace.TraceNode> offlineTraces;
+    private final java.util.concurrent.ExecutorService searchWorker=java.util.concurrent.Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"call-search");t.setDaemon(true);return t;});
+    private java.util.concurrent.Future<?> queryTask;
+    private long queryGeneration;
+    private int offlinePage;
+    private final Button previousPage=new Button("上一页"),nextPage=new Button("下一页"),previousMatch=new Button("上个命中"),nextMatch=new Button("下个命中");
+    private final Label matchCount=new Label();
+    private final EvidenceFilters filters=new EvidenceFilters("calls");
+    private EvidenceTimelinePane activeTimeline;
+    private CallDetailPane waterfallDetails;
+    private TreeItem<CallNode> waterfallAnchor;
+    private record CallFocus(com.agentmonitor.model.trace.TraceNode root,List<Integer> path) { }
+    private CallFocus pendingCallFocus;
+    private List<TreeItem<CallNode>> matches=List.of();private int matchIndex=-1;
+    private final java.util.Map<TreeItem<CallNode>,Boolean> expansionBeforeSearch=new java.util.IdentityHashMap<>();
+    private record PendingTrace(com.agentmonitor.model.trace.TraceNode node,java.util.function.BooleanSupplier current) { }
+    private final java.util.LinkedHashMap<String,PendingTrace> queued=new java.util.LinkedHashMap<>();
+    private final java.util.Map<String,java.util.function.BooleanSupplier> queuedCounts=new java.util.LinkedHashMap<>();
+    private boolean drainScheduled,closed,batching,submittingSort;private long frozenUpdates;
+    private final java.util.Map<String,CallNode> frozenRoots=new java.util.LinkedHashMap<>();
 
     public CallTreePane() {
         setSpacing(0);
@@ -70,7 +95,7 @@ public class CallTreePane extends VBox {
         treeTable.setShowRoot(false);
         treeTable.getStyleClass().add("call-tree-table");
         treeTable.setColumnResizePolicy(TreeTableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
-        treeTable.setFixedCellSize(38);treeTable.setId("call-tree-table");
+        treeTable.setFixedCellSize(DesktopPreferences.get().cellSize());treeTable.setId("call-tree-table");
         VBox.setVgrow(treeTable, Priority.ALWAYS);
 
         TreeTableColumn<CallNode, String> methodCol = new TreeTableColumn<>("方法");
@@ -104,7 +129,7 @@ public class CallTreePane extends VBox {
             if (event.getCode() == KeyCode.ENTER) {
                 showDetails(selected.getValue());
                 event.consume();
-            } else if (event.getCode() == KeyCode.RIGHT && !selected.isLeaf()) {
+            } else if (event.getCode() == KeyCode.RIGHT && !selected.isLeaf() && !selected.isExpanded()) {
                 selected.setExpanded(true);
                 event.consume();
             } else if (event.getCode() == KeyCode.LEFT && selected.isExpanded()) {
@@ -120,31 +145,35 @@ public class CallTreePane extends VBox {
             empty.setMaxSize(0, 0);
             empty.setMouseTransparent(true);
             row.setDisclosureNode(empty);
+            row.itemProperty().addListener((o,a,b)->row.pseudoClassStateChanged(javafx.css.PseudoClass.getPseudoClass("search-match"),b!=null&&!searchText().isBlank()&&matchesText(b.getFullClassName(),b.getMethodName2(),b.getThread(),searchText())));
             row.setOnMouseClicked(event->{if(event.getClickCount()==2&&!row.isEmpty())showDetails(row.getItem());});
             return row;
         });
 
         treeTable.getColumns().addAll(methodCol,threadCol,durCol,pctCol);
-        methodCol.setMinWidth(200);
+        methodCol.setMinWidth(200);methodCol.setUserData("method");threadCol.setUserData("thread");durCol.setUserData("duration");pctCol.setUserData("ratio");
+        treeTable.setSortPolicy(table->{if(offlineTraces!=null){if(!submittingSort){offlinePage=0;applyFilter(searchText());}return true;}return TreeTableView.DEFAULT_SORT_POLICY.call(table);});
         treeTable.setPlaceholder(new Label(""));
 
         searchField = new TextField();
+        filters.setQueryField(searchField);
         searchField.setPromptText("搜索方法名、线程名...");
         searchField.getStyleClass().add("search-field");
         searchField.setPrefWidth(200);
-        searchField.textProperty().addListener((obs, old, now) -> applyFilter(now));
+        searchField.textProperty().addListener((obs, old, now) -> {offlinePage=0;applyFilter(now);});
 
         Button clearBtn = new Button("清空");
         clearBtn.getStyleClass().add("action-btn");
         clearBtn.setTooltip(new Tooltip("清空当前显示的调用链；会话文件保留在磁盘上"));
         clearBtn.setOnAction(e -> clear());
 
-        pauseOutputButton = new Button("暂停输出");
+        pauseOutputButton = new Button("冻结视图");
         pauseOutputButton.getStyleClass().add("ghost-btn");
-        pauseOutputButton.setTooltip(new Tooltip("暂停界面接收新调用；Agent 继续采集到会话文件"));
+        pauseOutputButton.setTooltip(new Tooltip("冻结阅读位置；Agent 继续采集，恢复时显示最新 500 条窗口"));
         pauseOutputButton.setOnAction(e -> {
             outputPaused = !outputPaused;
-            pauseOutputButton.setText(outputPaused ? "恢复输出" : "暂停输出");
+            pauseOutputButton.setText(outputPaused ? "恢复实时" : "冻结视图");
+            if(!outputPaused){var pending=new ArrayList<>(frozenRoots.values());frozenRoots.clear();batching=true;try{for(CallNode node:pending)addRootOnFx(node);}finally{batching=false;}applyFilter(searchField.getText());frozenUpdates=0;}
             updateTitle();
         });
 
@@ -161,6 +190,23 @@ public class CallTreePane extends VBox {
         javafx.scene.layout.FlowPane toolbar = new javafx.scene.layout.FlowPane(8,6,titleLabel,search,pauseOutputButton,clearBtn,detailsToggle);
         toolbar.setPadding(new Insets(4, 8, 4, 0));
         toolbar.setAlignment(Pos.CENTER_LEFT);
+        evidenceFocus.setVisible(false);evidenceFocus.setManaged(false);evidenceFocus.setDisable(true);toolbar.getChildren().addAll(evidenceFocus,waterfall);
+        waterfall.setOnAction(e->{
+            var selected=treeTable.getSelectionModel().getSelectedItem();if(selected==null||selected.getValue().traceSource()==null)return;
+            var source=selected.getValue().traceSource();long generation=++queryGeneration;
+            searchWorker.submit(()->{var rows=EvidenceTimelinePane.fromTrace(source);Platform.runLater(()->{
+                if(closed||generation!=queryGeneration)return;hideDetails();
+                activeTimeline=new EvidenceTimelinePane();activeTimeline.setEvents(rows);activeTimeline.setShowRawDetails(false);waterfallAnchor=selected;
+                waterfallDetails=new CallDetailPane(this::hideDetails);waterfallDetails.show(selected.getValue(),PercentCell.getRootDuration(selected));
+                activeTimeline.setOnSelect(row->{var item=resolvePath(selected,row.path("callPath"));treeTable.getSelectionModel().select(item);treeTable.scrollTo(treeTable.getRow(item));waterfallDetails.show(item.getValue(),PercentCell.getRootDuration(item));});
+                Button back=new Button("返回调用详情");back.setOnAction(event->{var current=treeTable.getSelectionModel().getSelectedItem();showDetails(current==null?selected.getValue():current.getValue());});
+                SplitPane evidence=new SplitPane(activeTimeline,waterfallDetails);evidence.setOrientation(javafx.geometry.Orientation.VERTICAL);evidence.setDividerPositions(.62);
+                VBox box=new VBox(8,back,evidence);VBox.setVgrow(evidence,Priority.ALWAYS);waterfallView=box;contentSplit.getItems().add(box);contentSplit.setDividerPositions(.48);
+            });});
+        });
+        waterfall.setDisable(true);treeTable.getSelectionModel().selectedItemProperty().addListener((o,a,b)->waterfall.setDisable(b==null||b.getValue().traceSource()==null));
+        evidenceFocus.setOnAction(e->{var item=treeTable.getSelectionModel().getSelectedItem();if(item!=null&&onEvidenceFocus!=null)onEvidenceFocus.accept(item.getValue());});
+        treeTable.getSelectionModel().selectedItemProperty().addListener((o,a,b)->evidenceFocus.setDisable(b==null||b.getValue().getTraceId().isBlank()));
 
         emptyTitle = new Label("等待第一条调用链");
         emptyTitle.getStyleClass().add("empty-state-title");
@@ -178,25 +224,34 @@ public class CallTreePane extends VBox {
         detailPane=new CallDetailPane(this::hideDetails);
         contentSplit.getItems().add(treeArea);VBox.setVgrow(contentSplit,Priority.ALWAYS);
         treeTable.getSelectionModel().selectedItemProperty().addListener((obs,old,item)->{
-            if(item!=null&&contentSplit.getItems().size()>1){inspectedNode=item.getValue();detailPane.show(item.getValue(),PercentCell.getRootDuration(item));}
+            if(item!=null&&contentSplit.getItems().size()>1){
+                inspectedNode=item.getValue();detailPane.show(item.getValue(),PercentCell.getRootDuration(item));
+                if(activeTimeline!=null){waterfallDetails.show(item.getValue(),PercentCell.getRootDuration(item));var path=pathFrom(waterfallAnchor,item);activeTimeline.highlightEvidence(path==null?null:new ObjectMapper().createObjectNode().set("callPath",new ObjectMapper().valueToTree(path)));}
+            }
             else if(item==null&&!rebuildingRows)hideDetails();
         });
-        getChildren().addAll(toolbar,contentSplit);
+        previousMatch.setOnAction(e->moveMatch(-1));nextMatch.setOnAction(e->moveMatch(1));
+        previousPage.setOnAction(e->{offlinePage=Math.max(0,offlinePage-1);applyFilter(searchField.getText());});nextPage.setOnAction(e->{offlinePage++;applyFilter(searchField.getText());});
+        previousPage.setVisible(false);previousPage.setManaged(false);nextPage.setVisible(false);nextPage.setManaged(false);
+        filters.setOnChanged(()->{offlinePage=0;applyFilter(searchText());});
+        getChildren().addAll(toolbar,filters,new javafx.scene.layout.FlowPane(8,4,previousMatch,nextMatch,matchCount,previousPage,nextPage),contentSplit);
     }
 
+    public void setOnEvidenceFocus(java.util.function.Consumer<CallNode> action){onEvidenceFocus=action;evidenceFocus.setVisible(true);evidenceFocus.setManaged(true);}
+    private String searchText(){return searchField==null?"":searchField.getText().trim().toLowerCase(Locale.ROOT);}
     public long getObservedRootCount() { return totalRoots; }
 
     public void addRootNode(CallNode node) {
-        if (outputPaused) return;
-        Platform.runLater(() -> { if (!outputPaused) addRootOnFx(node); });
+        Platform.runLater(() -> { if (!closed) acceptRoot(node); });
     }
     private void addRootOnFx(CallNode node) {
+        if(offlineTraces!=null)return;
         TreeItem<CallNode> item = buildTreeItem(node, 1);
         if (!node.getTraceId().isBlank()) allRoots.removeIf(previous -> node.getTraceId().equals(previous.getValue().getTraceId()));
         allRoots.add(0, item);
         if (node.getTraceId().isBlank() || countedTraces.add(node.getTraceId())) totalRoots++;
         if (allRoots.size() > 500) allRoots.remove(allRoots.size() - 1);
-        applyFilter(searchField.getText());
+        if(!batching)applyFilter(searchField.getText());
     }
 
     /** All JavaFX state is created on the application thread, after leaving the collector. */
@@ -204,18 +259,26 @@ public class CallTreePane extends VBox {
         addTrace(node, () -> true);
     }
     public void addTrace(com.agentmonitor.model.trace.TraceNode node, java.util.function.BooleanSupplier stillCurrent) {
-        if (outputPaused) return;
-        Platform.runLater(() -> {
-            if (outputPaused || !stillCurrent.getAsBoolean()) return;
-            addRootOnFx(CallNode.fromTrace(node));
+        synchronized(queued){if(closed)return;String key=node.getTraceId().isBlank()?java.util.UUID.randomUUID().toString():node.getTraceId();queued.put(key,new PendingTrace(node,stillCurrent));queuedCounts.put(key,stillCurrent);while(queued.size()>500)queued.remove(queued.keySet().iterator().next());
+            if(drainScheduled)return;drainScheduled=true;}
+        Platform.runLater(()->{List<PendingTrace> batch;java.util.Map<String,java.util.function.BooleanSupplier> counts;
+            synchronized(queued){batch=new ArrayList<>(queued.values());counts=new java.util.LinkedHashMap<>(queuedCounts);queuedCounts.clear();queued.clear();drainScheduled=false;}
+            if(closed)return;
+            counts.forEach((key,current)->{if(current.getAsBoolean()&&countedTraces.add(key))totalRoots++;});
+            batching=true;try{for(var trace:batch)if(trace.current().getAsBoolean())acceptRoot(CallNode.fromTrace(trace.node()));}finally{batching=false;}
+            if(!outputPaused)applyFilter(searchField.getText());
         });
+    }
+    private void acceptRoot(CallNode node){
+        if(outputPaused){String key=node.getTraceId().isBlank()?"anonymous-"+(frozenUpdates++):node.getTraceId();frozenRoots.put(key,node);while(frozenRoots.size()>500)frozenRoots.remove(frozenRoots.keySet().iterator().next());updateTitle();}
+        else addRootOnFx(node);
     }
 
     /** A newly attached target must not inherit a manually paused or stale previous session view. */
     public void beginMonitoringSession() {
         outputPaused = false;
         titlePrefix = "调用链";
-        pauseOutputButton.setText("暂停输出");
+        pauseOutputButton.setText("冻结视图");
         pauseOutputButton.setDisable(false);
         clear();
     }
@@ -226,10 +289,10 @@ public class CallTreePane extends VBox {
      * This method must be invoked from the JavaFX application thread.
      */
     public void showOfflineReplay(List<CallNode> roots) {
-        hideDetails();
+        hideDetails();pendingCallFocus=null;offlineTraces=null;queryGeneration++;
         outputPaused = false;
         titlePrefix = "离线调用链";
-        pauseOutputButton.setText("暂停输出");
+        pauseOutputButton.setText("冻结视图");
         pauseOutputButton.setDisable(true);
         allRoots.clear(); countedTraces.clear();
         rootItem.getChildren().clear();
@@ -244,24 +307,94 @@ public class CallTreePane extends VBox {
     }
 
     private TreeItem<CallNode> buildTreeItem(CallNode node, int depth) {
-        TreeItem<CallNode> item = new TreeItem<>(node);
-        // The root call is depth 1. Expanding only depths 1–2 makes the first
-        // three call levels visible while keeping deeper branches on demand.
-        item.setExpanded(depth < DEFAULT_EXPANDED_CALL_DEPTH);
-        for (CallNode child : node.getChildren()) {
-            item.getChildren().add(buildTreeItem(child, depth + 1));
-        }
-        return item;
+        TreeItem<CallNode> item=new TreeItem<>(node){
+            private boolean loaded;
+            @Override public boolean isLeaf(){return !getValue().hasChildren();}
+            @Override public javafx.collections.ObservableList<TreeItem<CallNode>> getChildren(){
+                if(!loaded){loaded=true;for(CallNode child:getValue().getChildren())super.getChildren().add(buildTreeItem(child,depth+1));}
+                return super.getChildren();
+            }
+        };
+        item.setExpanded(depth<DEFAULT_EXPANDED_CALL_DEPTH);return item;
     }
-
+    public void showOfflineTraces(List<com.agentmonitor.model.trace.TraceNode> roots){
+        clear();outputPaused=false;pauseOutputButton.setText("冻结视图");offlineTraces=List.copyOf(roots);totalRoots=roots.size();titlePrefix="离线调用链";pauseOutputButton.setDisable(true);offlinePage=0;
+        previousPage.setVisible(true);previousPage.setManaged(true);nextPage.setVisible(true);nextPage.setManaged(true);applyFilter(searchField.getText());
+    }
+    private record TraceMatch(com.agentmonitor.model.trace.TraceNode root,List<List<Integer>> paths) { }
+    private void filterOffline(String needle){
+        long generation=++queryGeneration;if(queryTask!=null)queryTask.cancel(true);
+        List<com.agentmonitor.model.trace.TraceNode> source=offlineTraces;int requested=offlinePage;CallFocus focus=pendingCallFocus;
+        var criteria=filters.criteria();
+        var sorting=treeTable.getSortOrder().stream().map(column->java.util.Map.entry(column.getUserData().toString(),column.getSortType()==TreeTableColumn.SortType.DESCENDING)).toList();
+        matchCount.setText("正在搜索历史调用…");
+        queryTask=searchWorker.submit(()->{
+            List<TraceMatch> found=new ArrayList<>();
+            for(var root:source){if(Thread.currentThread().isInterrupted())return;List<List<Integer>> paths=new ArrayList<>();
+                if(!needle.isBlank()){
+                    record Visit(com.agentmonitor.model.trace.TraceNode node,List<Integer> path) { }
+                    var pending=new java.util.ArrayDeque<Visit>();pending.add(new Visit(root,List.of()));
+                    while(!pending.isEmpty()){
+                        if(Thread.currentThread().isInterrupted())return;var visit=pending.removeLast();var node=visit.node();
+                        if(matchesText(node.getFullClassName(),node.getMethodName2(),node.getThread(),needle)&&paths.size()<2000)paths.add(visit.path());
+                        for(int i=0;i<node.getChildren().size();i++){var path=new ArrayList<>(visit.path());path.add(i);pending.add(new Visit(node.getChildren().get(i),List.copyOf(path)));}
+                    }
+                }
+                if((needle.isBlank()||!paths.isEmpty())&&criteria.matches(root.getDurationNanos(),root.isError(),root.getThread(),root.getAttributes().getOrDefault("http.route",root.getAttributes().getOrDefault("url.path",""))))found.add(new TraceMatch(root,paths));
+            }
+            if(!sorting.isEmpty())found.sort((a,b)->{for(var sort:sorting){var x=a.root();var y=b.root();int result=switch(sort.getKey()){case "duration"->Long.compare(x.getDurationNanos(),y.getDurationNanos());case "method"->(x.getFullClassName()+"#"+x.getMethodName2()).compareToIgnoreCase(y.getFullClassName()+"#"+y.getMethodName2());case "thread"->x.getThread().compareToIgnoreCase(y.getThread());default->0;};if(result!=0)return sort.getValue()?-result:result;}return 0;});
+            int requestedPage=requested;if(focus!=null)for(int i=0;i<found.size();i++)if(found.get(i).root()==focus.root()){requestedPage=i/100;break;}
+            int pages=Math.max(1,(found.size()+99)/100),page=Math.min(requestedPage,pages-1);
+            var visible=List.copyOf(found.subList(Math.min(page*100,found.size()),Math.min((page+1)*100,found.size())));
+            Platform.runLater(()->{if(closed||generation!=queryGeneration)return;hideDetails();offlinePage=page;allRoots.clear();List<TreeItem<CallNode>> hits=new ArrayList<>();
+                for(var result:visible){var item=buildTreeItem(CallNode.fromTrace(result.root()),1);allRoots.add(item);
+                    for(var path:result.paths()){var current=item;for(int index:path){current.setExpanded(true);current=current.getChildren().get(index);}hits.add(current);}}
+                submittingSort=true;try{rootItem.getChildren().setAll(allRoots);}finally{submittingSort=false;}setMatches(hits);emptyState.setVisible(allRoots.isEmpty());emptyTitle.setText("没有匹配的调用链");emptyDescription.setText("试试其他方法或线程名。");
+                previousPage.setDisable(page==0);nextPage.setDisable(page>=pages-1);updateTitle(allRoots.size());if(focus!=null){pendingCallFocus=null;for(int i=0;i<visible.size();i++)if(visible.get(i).root()==focus.root()){var target=resolvePath(allRoots.get(i),new ObjectMapper().valueToTree(focus.path()));treeTable.getSelectionModel().select(target);treeTable.scrollTo(treeTable.getRow(target));showDetails(target.getValue());break;}}
+                matchCount.setText("匹配链 "+found.size()+" · 第 "+(page+1)+" / "+pages+" 页 · 本页命中 "+hits.size()+"（每链最多定位 2000 处）");
+            });
+        });
+    }
+    private void setMatches(List<TreeItem<CallNode>> values){matches=List.copyOf(values);matchIndex=-1;previousMatch.setDisable(matches.isEmpty());nextMatch.setDisable(matches.isEmpty());treeTable.refresh();}
+    private void moveMatch(int direction){if(matches.isEmpty())return;matchIndex=Math.floorMod(matchIndex+direction,matches.size());var item=matches.get(matchIndex);treeTable.getSelectionModel().select(item);treeTable.scrollTo(treeTable.getRow(item));showDetails(item.getValue());}
+    @Override public void close(){closed=true;queryGeneration++;if(queryTask!=null)queryTask.cancel(true);searchWorker.shutdownNow();synchronized(queued){queued.clear();}}
 
     private void showDetails(CallNode node) {
+        clearWaterfall();
         inspectedNode=node;
         if(contentSplit.getItems().size()==1){contentSplit.getItems().add(detailPane);contentSplit.setDividerPositions(.66);}
         detailsToggle.setText("收起详情");
         detailPane.show(node,PercentCell.getRootDuration(treeTable.getSelectionModel().getSelectedItem()));
     }
-    private void hideDetails(){contentSplit.getItems().remove(detailPane);inspectedNode=null;detailsToggle.setText("调用详情");}
+    private void hideDetails(){clearWaterfall();contentSplit.getItems().remove(detailPane);inspectedNode=null;detailsToggle.setText("调用详情");}
+
+    private void clearWaterfall(){if(waterfallView!=null)contentSplit.getItems().remove(waterfallView);waterfallView=null;activeTimeline=null;waterfallDetails=null;waterfallAnchor=null;}
+    private static TreeItem<CallNode> resolvePath(TreeItem<CallNode> root,JsonNode path){var item=root;for(JsonNode index:path){item.setExpanded(true);item=item.getChildren().get(index.asInt());}return item;}
+    private static List<Integer> pathFrom(TreeItem<CallNode> root,TreeItem<CallNode> selected){List<Integer> path=new ArrayList<>();var item=selected;while(item!=root){var parent=item.getParent();if(parent==null)return null;path.add(0,parent.getChildren().indexOf(item));item=parent;}return path;}
+    public void focusCall(JsonNode evidence){
+        String trace=evidence.path("traceId").asText(),span=evidence.path("spanId").asText(),method=evidence.path("method").asText();
+        if(trace.isBlank())return;
+        List<com.agentmonitor.model.trace.TraceNode> source=offlineTraces!=null?offlineTraces:allRoots.stream().map(item->item.getValue().traceSource()).filter(java.util.Objects::nonNull).toList();
+        long version=++queryGeneration;if(queryTask!=null)queryTask.cancel(true);
+        queryTask=searchWorker.submit(()->{
+            record Visit(com.agentmonitor.model.trace.TraceNode node,List<Integer> path) { }
+            CallFocus found=null;
+            outer:for(var root:source){var pending=new java.util.ArrayDeque<Visit>();pending.add(new Visit(root,List.of()));
+                while(!pending.isEmpty()){if(Thread.currentThread().isInterrupted())return;var visit=pending.removeLast();var node=visit.node();
+                    boolean identity=span.isBlank()?(method.isBlank()||method.startsWith(node.getFullClassName()+"#"+node.getMethodName2())):span.equals(node.getAttributes().get("agent.span.id"));
+                    if(trace.equals(node.getTraceId())&&identity){found=new CallFocus(root,visit.path());break outer;}
+                    for(int i=0;i<node.getChildren().size();i++){var path=new ArrayList<>(visit.path());path.add(i);pending.add(new Visit(node.getChildren().get(i),List.copyOf(path)));}
+                }
+            }
+            CallFocus match=found;Platform.runLater(()->{
+                if(closed||version!=queryGeneration)return;
+                if(match==null){matchCount.setText("当前证据中没有对应调用；实时窗口仅保留最近 500 条链，可停止后加载完整会话。");return;}
+                searchField.clear();filters.clear();
+                if(offlineTraces!=null){pendingCallFocus=match;applyFilter("");}
+                else{applyFilter("");for(var item:allRoots)if(item.getValue().traceSource()==match.root()){var target=resolvePath(item,new ObjectMapper().valueToTree(match.path()));treeTable.getSelectionModel().select(target);treeTable.scrollTo(treeTable.getRow(target));showDetails(target.getValue());break;}}
+            });
+        });
+    }
 
     static String formatJsonText(String rawText) throws Exception {
         String text = rawText == null ? "" : rawText.trim();
@@ -413,6 +546,10 @@ public class CallTreePane extends VBox {
 
     public void clear() {
         hideDetails();
+        synchronized(queued){queued.clear();queuedCounts.clear();}
+        offlineTraces=null;queryGeneration++;offlinePage=0;if(queryTask!=null)queryTask.cancel(true);frozenRoots.clear();frozenUpdates=0;
+        previousPage.setVisible(false);previousPage.setManaged(false);nextPage.setVisible(false);nextPage.setManaged(false);
+        expansionBeforeSearch.clear();setMatches(List.of());
         allRoots.clear(); countedTraces.clear();
         rootItem.getChildren().clear();
         totalRoots = 0;
@@ -420,12 +557,18 @@ public class CallTreePane extends VBox {
     }
 
     private void applyFilter(String text) {
+        String query=text==null?"":text.trim().toLowerCase(Locale.ROOT);
+        if(offlineTraces!=null){filterOffline(query);return;}
+        List<TreeItem<CallNode>> hits=new ArrayList<>();
+        if(query.isBlank()){expansionBeforeSearch.forEach(TreeItem::setExpanded);expansionBeforeSearch.clear();}
+        else for(var item:allRoots)if(matchesCriteria(item.getValue()))collectMatches(item,query,hits);
+        setMatches(hits);matchCount.setText(query.isBlank()?"实时视图最多保留最近 500 条链":"命中 "+hits.size()+" 处");
         rebuildingRows=true;
         rootItem.getChildren().clear();
         List<TreeItem<CallNode>> filtered = new ArrayList<>();
         String needle = text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
         for (TreeItem<CallNode> item : allRoots) {
-            if (needle.isEmpty() || matchesCall(item, needle)) filtered.add(item);
+            if ((needle.isEmpty() || matchesCall(item, needle))&&matchesCriteria(item.getValue())) filtered.add(item);
         }
         rootItem.getChildren().setAll(filtered);
         // Rebuilding the visible roots replaces the TreeItem list. JavaFX keeps the
@@ -455,10 +598,17 @@ public class CallTreePane extends VBox {
         for(var child:item.getChildren()){var match=findInspected(child,previous);if(match!=null)return match;}return null;
     }
 
+    private void collectMatches(TreeItem<CallNode> item,String needle,List<TreeItem<CallNode>> hits){
+        CallNode node=item.getValue();if(matchesText(node.getFullClassName(),node.getMethodName2(),node.getThread(),needle)){
+            hits.add(item);for(var ancestor=item.getParent();ancestor!=null&&ancestor.getValue()!=null;ancestor=ancestor.getParent()){expansionBeforeSearch.putIfAbsent(ancestor,ancestor.isExpanded());ancestor.setExpanded(true);}
+        }
+        for(var child:item.getChildren())collectMatches(child,needle,hits);
+    }
+    private boolean matchesCriteria(CallNode node){return filters.criteria().matches(node.getDurationNanos(),node.isError(),node.getThread(),node.getAttributes().getOrDefault("http.route",node.getAttributes().getOrDefault("url.path","")));}
+    private static boolean matchesText(String cls,String method,String thread,String query){return (cls+"#"+method+" "+cls+"."+method+"() "+thread).toLowerCase(Locale.ROOT).contains(query);}
     private boolean matchesCall(TreeItem<CallNode> item, String needle) {
         CallNode node = item.getValue();
-        if (node.getMethod().toLowerCase(Locale.ROOT).contains(needle)
-                || node.getThread().toLowerCase(Locale.ROOT).contains(needle)) return true;
+        if(matchesText(node.getFullClassName(),node.getMethodName2(),node.getThread(),needle))return true;
         return item.getChildren().stream().anyMatch(child -> matchesCall(child, needle));
     }
 
@@ -467,7 +617,7 @@ public class CallTreePane extends VBox {
     }
 
     private void updateTitle(int visibleCount) {
-        String suffix = outputPaused ? " · 已暂停" : "";
+        String suffix = outputPaused ? " · 已冻结 · 待更新 "+frozenRoots.size()+" 条（最多 500）" : "";
         if (totalRoots == 0) {
             titleLabel.setText(titlePrefix + "  (0)" + suffix);
         } else {

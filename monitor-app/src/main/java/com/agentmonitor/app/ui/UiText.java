@@ -1,0 +1,7 @@
+package com.agentmonitor.app.ui;
+
+public final class UiText {
+    private UiText(){ }
+    public static String status(String text){return switch(text){case "true"->"是";case "false"->"否";case "COMPLETED"->"已完成";case "RUNNING"->"采集中";case "INCOMPLETE"->"采集不完整";case "DEGRADED"->"部分证据不可用";case "NOT_FINALIZED"->"尚未收尾";case "NO_TRACE_REPORT"->"仅诊断证据";case "UNREADABLE_REPORT"->"报告不可读";case "AVAILABLE"->"可查看";case "MISSING"->"文件缺失";case "UNREADABLE"->"读取失败";case "NOT_REQUESTED"->"未启用";case "PENDING"->"等待生成";case "FAILED"->"失败";case "TIMED_OUT"->"超时";case "UNAVAILABLE"->"不可用";case "BUDGET_REACHED"->"已达容量限额";case "NORMAL"->"正常";case "REDUCED"->"降低采样";case "MINIMAL"->"最小采样";default->text;};}
+    public static String comparisonReason(String reason){String[] fields=reason.split(":",2);String detail=fields.length>1?fields[1]:"";String label=switch(fields[0]){case "capture_complete_and_analysis_ready_required"->"会话需完整且有可分析数据";case "configuration_missing_or_different"->"采集配置缺失或不一致";case "payload_capture_missing_or_different","payload_capture_unknown"->"详情采集设置缺失或不一致";case "environment_missing_or_different"->"运行环境缺失或不一致";case "experiment_missing_or_different","experiment_context_missing_or_different"->"实验负载、数据或预热声明缺失或不一致";case "missing_session_or_raw_manifest"->"缺少会话身份或原始文件清单";case "raw_identity_or_completeness_mismatch"->"原始文件身份或完整性对账不一致";case "missing_overhead_policy_evidence"->"缺少开销策略证据";case "adaptive_policy_changed_or_unknown"->"采集期间开销策略曾变化或未知";default->"比较条件未满足";};return label+(detail.isBlank()?"":"："+detail)+"（"+fields[0]+"）";}
+}

@@ -15,22 +15,13 @@ public class CallNode {
 
     /** Copies a completed headless tree into desktop-owned observable state. */
     public static CallNode fromTrace(com.agentmonitor.model.trace.TraceNode source) {
-        java.util.Map<com.agentmonitor.model.trace.TraceNode, CallNode> copies = new java.util.IdentityHashMap<>();
-        java.util.ArrayDeque<com.agentmonitor.model.trace.TraceNode> pending = new java.util.ArrayDeque<>();
-        pending.add(source);
-        while (!pending.isEmpty()) {
-            var next = pending.removeFirst();
-            copies.put(next, new CallNode(next.getFullClassName(), next.getMethodName2(), next.getThread(),
-                    next.getDurationNanos(), next.isError(), next.getDepth(), next.getSignature(), next.getArgs(),
-                    next.getRetVal(), next.getStackTrace(), next.getKind(), next.getAttributes()));
-            copies.get(next).traceId = next.getTraceId();
-            pending.addAll(next.getChildren());
-        }
-        for (var entry : copies.entrySet())
-            for (var child : entry.getKey().getChildren()) entry.getValue().children.add(copies.get(child));
-        return copies.get(source);
+        CallNode node=new CallNode(source.getFullClassName(),source.getMethodName2(),source.getThread(),source.getDurationNanos(),source.isError(),source.getDepth(),source.getSignature(),source.getArgs(),source.getRetVal(),source.getStackTrace(),source.getKind(),source.getAttributes());
+        node.source=source;node.traceId=source.getTraceId();node.pendingChildren=source.getChildren();return node;
     }
+    private java.util.List<com.agentmonitor.model.trace.TraceNode> pendingChildren;
 
+    private com.agentmonitor.model.trace.TraceNode source;
+    public com.agentmonitor.model.trace.TraceNode traceSource(){return source;}
     private String traceId = "";
     public String getTraceId() { return traceId; }
     private final StringProperty method;
@@ -112,7 +103,11 @@ public class CallNode {
     public SpanKind getKind() { return kind; }
     public Map<String, String> getAttributes() { return attributes; }
 
-    public ObservableList<CallNode> getChildren() { return children; }
+    public boolean hasChildren(){return pendingChildren!=null?!pendingChildren.isEmpty():!children.isEmpty();}
+    public ObservableList<CallNode> getChildren() {
+        if(pendingChildren!=null){var source=pendingChildren;pendingChildren=null;for(var child:source)children.add(fromTrace(child));}
+        return children;
+    }
 
     public String getDurationDisplay() {
         long ns = durationNanos.get();

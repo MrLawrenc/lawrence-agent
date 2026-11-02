@@ -277,3 +277,13 @@ Empty states explain what is missing and name the next action. Scope indexing ma
 - **Don't** move routine call details, exclusion editing, or diagnostic results into additional windows.
 - **Don't** treat generated tonal ramps or HTML specimens as additional production tokens or executable JavaFX controls.
 - **Don't** present illustrative preview data as a live capture or a rule preview as actual enhancement results.
+
+## Evidence and report refinements
+
+The viewing context is independent of the live target identity and remains visible in the toolbar. Historical views disable live-PID diagnostic capture. The report page combines a compact session catalog with independent restoration, trace and diagnostic status plus typed evidence tables. Tables sort across all records before paging, provide human-readable units, and preserve raw values. Diagnostic details use summary/raw tabs; offline calls page roots and expand matching paths. Background search discards stale results; metrics retain a fixed session epoch and show read warnings explicitly.
+
+## Desktop analysis controls
+
+The capture header uses a native runtime-options menu so rolling controls do not take height from scope browsing. Baseline declarations and personal display settings have dedicated workbench pages. Combination predicates preserve the root-call meaning in trace views and the row meaning in diagnostic tables. Timestamp canvases provide native buttons and an equivalent table / tree path for keyboard users; they disclose missing time, bounded lanes and causality limits. Personal light/dark styles scale the documented typography and keep semantic runtime colors distinct from the action accent.
+
+诊断任务在当前页展示阶段、实际用时、取消与失败重试；取消等待目标端步骤和清理确认。图表选择、证据表与调用详情共享定位，缩放 / 框选会明确筛选范围，重置清除时间筛选。基线与变更后会话是独立绑定状态，比较门槛和阻断原因复用 core。

@@ -152,7 +152,7 @@ sourceSets {
 }
 configurations.uiPreviewImplementation.extendsFrom(configurations.implementation)
 def previewControls = ['MainApp', 'controller/MainController', 'ui/LogViewerDialog', 'ui/UiIcons', 'ui/AppIcons', 'ui/SearchBox', 'ui/JvmSelectDialog', 'ui/ClassSelectionPane', 'ui/ClassSelectionRules', 'ui/AdvancedConfigPane', 'ui/CallDetailPane',
-                       'ui/WorkbenchPane', 'ui/DiagnosticsPane', 'ui/DiagnosticsWindow', 'util/SessionArtifactOpener', 'ui/WorkspaceActionBar', 'ui/CallTreePane', 'ui/JvmMetricsPane', 'model/CallNode']
+                       'ui/WorkbenchPane', 'ui/DesktopPreferences', 'ui/EvidenceFilters', 'ui/UiText', 'ui/BaselinePane', 'ui/EvidenceTimelinePane', 'ui/EvidenceTablePane', 'ui/SessionsPane', 'ui/DiagnosticsPane', 'ui/DiagnosticsWindow', 'util/SessionArtifactOpener', 'ui/WorkspaceActionBar', 'ui/CallTreePane', 'ui/JvmMetricsPane', 'model/CallNode']
 tasks.named('compileUiPreviewJava', JavaCompile) {
     source = files(previewControls.collect { "src/main/java/com/agentmonitor/app/${it}.java" },
                    fileTree("${rootDir}/scripts/ui-preview") { include '**/*.java' })
@@ -163,6 +163,10 @@ tasks.register('uiPreview', JavaExec) {
     dependsOn tasks.named('uiPreviewClasses')
     classpath = sourceSets.uiPreview.runtimeClasspath
     mainClass = 'com.agentmonitor.app.ui.UIWorkbenchPreview'
+    maxHeapSize = providers.gradleProperty('uiMaxHeap').getOrElse('512m')
+    systemProperty 'agentmonitor.ui.preferences', layout.buildDirectory.file('ui-preview/preferences.json').get().asFile.absolutePath
+    systemProperty 'glass.gtk.uiScale', providers.gradleProperty('uiScale').getOrElse('1.0')
+    systemProperty 'glass.win.uiScale', providers.gradleProperty('uiScale').getOrElse('1.0')
     doFirst {
         jvmArgs '--module-path', configurations.uiPreviewRuntimeClasspath.files
                 .findAll { it.name.startsWith('javafx-') }.collect { it.absolutePath }.join(File.pathSeparator),
@@ -182,5 +186,19 @@ tasks.register('diagnosticsPreview', JavaExec) {
         jvmArgs '--module-path', configurations.diagnosticsPreviewRuntimeClasspath.files
                 .findAll { it.name.startsWith('javafx-') }.collect { it.absolutePath }.join(File.pathSeparator),
                 '--add-modules', 'javafx.controls'
+    }
+}
+
+// Explicitly invoked read-only soak; never starts or selects a business JVM.
+tasks.register('uiSoak', JavaExec) {
+    group = 'verification'
+    dependsOn tasks.named('classes'), tasks.named('diagnosticsPreviewClasses')
+    classpath = sourceSets.diagnosticsPreview.runtimeClasspath + sourceSets.main.output
+    mainClass = 'com.agentmonitor.app.ui.DesktopSoak'
+    systemProperty 'agentmonitor.ui.preferences', layout.buildDirectory.file('ui-soak/preferences.json').get().asFile.absolutePath
+    doFirst {
+        if (!providers.gradleProperty('soakSession').isPresent()) throw new GradleException('Supply -PsoakSession=<owned-session>')
+        args providers.gradleProperty('soakSession').get(), providers.gradleProperty('soakSeconds').getOrElse('3660')
+        jvmArgs '--module-path', configurations.diagnosticsPreviewRuntimeClasspath.files.findAll { it.name.startsWith('javafx-') }.collect { it.absolutePath }.join(File.pathSeparator), '--add-modules', 'javafx.controls'
     }
 }

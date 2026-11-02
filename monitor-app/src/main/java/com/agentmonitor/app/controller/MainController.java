@@ -11,7 +11,6 @@ import com.agentmonitor.core.model.MonitoringSession;
 import com.agentmonitor.core.model.SessionResource;
 import com.agentmonitor.core.config.MonitoringConfigYaml;
 import com.agentmonitor.model.config.MonitoringConfig;
-import com.agentmonitor.core.report.SessionAnalysisPrompt;
 import com.agentmonitor.model.report.CaptureQuality;
 import com.agentmonitor.core.service.JvmMetricsService;
 import com.agentmonitor.core.service.JvmService;
@@ -21,7 +20,6 @@ import com.agentmonitor.core.service.SessionResourceLoader;
 import com.agentmonitor.core.service.TraceServer;
 import com.agentmonitor.core.service.MonitoringRuntime;
 import com.agentmonitor.core.util.AppLog;
-import com.agentmonitor.app.util.SessionArtifactOpener;
 import com.agentmonitor.app.ui.CallTreePane;
 import com.agentmonitor.app.ui.ClassSelectionPane;
 import com.agentmonitor.app.ui.JvmMetricsPane;
@@ -29,6 +27,8 @@ import com.agentmonitor.app.ui.LogViewerDialog;
 import com.agentmonitor.app.ui.UiIcons;
 import com.agentmonitor.app.ui.WorkbenchPane;
 import com.agentmonitor.app.ui.DiagnosticsPane;
+import com.agentmonitor.app.ui.SessionsPane;
+import java.nio.file.Path;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.PauseTransition;
@@ -39,18 +39,14 @@ import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
-import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.OverrunStyle;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
-import javafx.scene.control.SplitPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.ToolBar;
 import javafx.scene.control.Tooltip;
-import javafx.scene.input.Clipboard;
-import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -125,6 +121,17 @@ public class MainController {
     /** Pages share the selected target and are disposed with its controller. */
     private WorkbenchPane workbench;
     private DiagnosticsPane diagnosticsPane;
+    private SessionsPane sessionsPane;
+    private com.agentmonitor.app.ui.BaselinePane baselinePane;
+    private Path viewedHistory;
+    private long replayGeneration;
+    private String replayReturnPage="calls";
+    private final javafx.scene.control.CheckBox rollingEnabled=new javafx.scene.control.CheckBox("滚动归档");
+    private final javafx.scene.control.Spinner<Integer> rollingWindow=new javafx.scene.control.Spinner<>(1,60,5);
+    private final javafx.scene.control.Spinner<Integer> rollingDuration=new javafx.scene.control.Spinner<>(1,10080,61);
+    private final javafx.scene.control.Spinner<Integer> rollingBudget=new javafx.scene.control.Spinner<>(1,1048576,512);
+    private long rollingStopAfterMillis;
+    private final Label viewingLabel=new Label("查看：本次会话");
 
     private final JvmProcess target;
     private Runnable onSwitchTarget;
@@ -289,7 +296,8 @@ public class MainController {
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        VBox identity = new VBox(3, resourceServiceLabel, resourceRuntimeLabel);
+        VBox identity = new VBox(3, resourceServiceLabel, resourceRuntimeLabel, viewingLabel);
+        viewingLabel.getStyleClass().add("hint-label");viewingLabel.setMaxWidth(310);viewingLabel.setTextOverrun(OverrunStyle.CENTER_ELLIPSIS);
         identity.setMinWidth(0);
         UiIcons.decorate(refreshBtn, "refresh");
         UiIcons.decorate(logBtn, "file");
@@ -440,9 +448,15 @@ public class MainController {
             Button advanced = new Button("高级配置");
             UiIcons.decorate(advanced, "edit");
             advanced.setOnAction(event -> showAdvancedConfiguration());
-            workbench.setPageActions("scope", WorkbenchPane.actions(refreshBtn, importBtn, saveBtn, advanced));
+
+            rollingWindow.setPrefWidth(85);rollingDuration.setPrefWidth(90);rollingBudget.setPrefWidth(100);
+            rollingWindow.setAccessibleText("滚动窗口分钟");rollingDuration.setAccessibleText("滚动采集总分钟");rollingBudget.setAccessibleText("滚动磁盘预算 MiB");
+            var options=new VBox(8,rollingEnabled,new HBox(8,new Label("窗口 分钟"),rollingWindow),new HBox(8,new Label("总时长 分钟"),rollingDuration),new HBox(8,new Label("磁盘 MiB"),rollingBudget));options.setPadding(new Insets(12));
+            var runtimeOptions=new javafx.scene.control.MenuButton("运行选项");runtimeOptions.getItems().add(new javafx.scene.control.CustomMenuItem(options,false));
+            workbench.setPageActions("scope",WorkbenchPane.actions(refreshBtn,importBtn,saveBtn,advanced,runtimeOptions));
             return classSelectionPane;
         });
+        callTreePane.setOnEvidenceFocus(node->{workbench.selectPage("diagnostics");diagnosticsPane.showTimeline(node.getTraceId());});
         workbench.addPage("calls", "调用链", "搜索方法或线程，选择调用查看参数、SQL 与异常。", "trace", () -> callTreePane);
         workbench.addPage("overview", "JVM 概览", "目标进程的实时指标，与本次采集范围分别呈现。", "monitor", () -> {
             VBox summary = buildConfigSummaryPanel();
@@ -455,25 +469,32 @@ public class MainController {
         });
         workbench.addPage("diagnostics", "诊断分析", "从指标、线程和依赖证据逐步定位问题。", "search", () -> {
             diagnosticsPane = new DiagnosticsPane(target.getPid(), () -> monitoringSession, () -> traceServer);
+            diagnosticsPane.setOnRecapture(()->workbench.selectPage("experiment"));
+            diagnosticsPane.setOnCallSelected(row->{
+                Path selected=viewedHistory!=null?viewedHistory:monitoringSession==null?null:monitoringSession.sessionDirectory();
+                if(selected==null)return;
+                if(viewedHistory==null&&(monitoring||traceServer!=null)){workbench.selectPage("calls");callTreePane.focusCall(row);}
+                else{selectViewedSession(selected,true);if(offlineReplayLoading){pendingReplayFocus=row;pendingReplayFocusGeneration=replayGeneration;replayReturnPage="calls";}}
+            });
+            diagnosticsPane.setOnSessionSelected(path->selectViewedSession(path,true));
+            diagnosticsPane.setViewedSession(viewedHistory);
             return diagnosticsPane;
         });
-        workbench.addPage("sessions", "会话与报告", "查看采集结果，或打开已有会话进行离线分析。", "folder", this::buildSessionEmptyState);
+        workbench.addPage("sessions", "会话与报告", "查看采集结果，或打开已有会话进行离线分析。", "folder", () -> {
+            sessionsPane=new SessionsPane(path->selectViewedSession(path,true),()->workbench.selectPage("diagnostics"),()->{workbench.selectPage("calls");selectViewedSession(viewedHistory,true);});
+            if(target.getPid().matches("[0-9]+"))sessionsPane.setCatalogRoot(com.agentmonitor.core.util.UserPath.resolve(currentConfig.output().sessionRootDir(),Path.of(System.getProperty("user.home"),"Downloads","agent-monitor-captures")));
+            sessionsPane.showSession(viewedHistory!=null?viewedHistory:monitoringSession==null?null:monitoringSession.sessionDirectory(),restorationText());
+            return sessionsPane;
+        });
         workbench.addPage("advanced", "高级配置", "编辑完整 YAML；校验通过后才应用到下一次采集。", "edit", this::buildAdvancedEditor);
+        workbench.addPage("experiment","基线实验","固定负载与预热，再比较优化前后的证据。","monitor",()->{
+            baselinePane=new com.agentmonitor.app.ui.BaselinePane(()->currentConfig,experiment->{var c=currentConfig;applyYamlConfigurationAsync(new MonitoringConfig(c.schemaVersion(),c.scope(),c.sampling(),c.output(),c.resource(),c.dependencies(),c.analysis(),c.diagnostics(),c.overhead(),experiment),"基线实验声明已保存");},()->{if(monitoring||traceServer!=null)return false;workbench.selectPage("scope");startBtn.fire();return traceServer!=null;},(before,after)->{workbench.selectPage("diagnostics");diagnosticsPane.compareSessions(before,after);},path->selectViewedSession(path,true));return baselinePane;
+        });
+        workbench.addPage("preferences","界面偏好","调整主题、字号和数据密度，保留常用视图。","edit",()->com.agentmonitor.app.ui.DesktopPreferences.get().pane());
         workbench.addUtility(replayBtn, "folder");
         workbench.addUtility(logBtn, "file");
         workbench.selectPage("scope");
         return workbench;
-    }
-
-    private VBox buildSessionEmptyState() {
-        Label title = new Label("采集完成后，在这里查看报告"); title.getStyleClass().add("empty-state-title");
-        Label hint = new Label("停止采集并确认字节码还原后，可打开报告、会话目录或复制 AI 分析提示词。");
-        hint.setWrapText(true); hint.setMaxWidth(520); hint.getStyleClass().add("empty-state-desc");
-        Button history = new Button("打开历史会话"); history.setOnAction(event -> openHistoricalReplay());
-        UiIcons.decorate(history, "folder");
-        VBox empty = new VBox(16, UiIcons.icon("folder"), title, hint, history);
-        empty.setAlignment(Pos.CENTER); empty.getStyleClass().add("workbench-empty");
-        return empty;
     }
 
     private VBox buildAdvancedEditor() {
@@ -613,6 +634,11 @@ public class MainController {
         final MonitoringRuntime monitorServer;
         try {
             monitorServer = new MonitoringRuntime(target.getPid(), config);
+            if(rollingEnabled.isSelected()){
+                if((long)rollingDuration.getValue()/rollingWindow.getValue()>10000)throw new IllegalArgumentException("滚动窗口数超过 10000，请增加窗口长度");
+                monitorServer.enableRolling(rollingWindow.getValue()*60000L,rollingBudget.getValue()*1048576L);
+            }
+            rollingStopAfterMillis=rollingEnabled.isSelected()?rollingDuration.getValue()*60000L:0;
             monitoringSession = monitorServer.session();
             Thread shutdown = new Thread(monitorServer::stopAndAwaitRestore, "desktop-restore-on-exit");
             shutdownHooks.put(monitorServer, shutdown);
@@ -632,11 +658,12 @@ public class MainController {
         AppLog.info("[agent-monitor] session started id=" + monitoringSession.sessionId()
                 + " directory=" + monitoringSession.sessionDirectory());
         callTreePane.beginMonitoringSession();
-        workbench.replacePage("sessions", buildSessionEmptyState());
+        selectViewedSession(null,false);
         traceServer = monitorServer;
+        if(baselinePane!=null)baselinePane.captureStarted(monitoringSession.sessionDirectory());
         enhancementScopeLabel.setText("本次挂载 · 等待实际增强结果");
         enhancementStateLabel.setText("挂载中");enhancedClassLabel.setText("—");enhancedMethodLabel.setText("—");
-        monitorServer.setOnRootNode(node -> callTreePane.addTrace(node, () -> !controllerClosed && traceServer == monitorServer));
+        monitorServer.setOnRootNode(node -> callTreePane.addTrace(node, () -> !controllerClosed && viewedHistory==null && traceServer == monitorServer));
         monitorServer.setOnStatusChange(msg -> Platform.runLater(() -> {
             if (targetExitDetected.get() || traceServer != monitorServer) return;
             if (msg.startsWith("Agent 已连接")) {
@@ -683,6 +710,7 @@ public class MainController {
             monitorStartMs = System.currentTimeMillis();
             elapsedTimeline = new Timeline(new KeyFrame(Duration.seconds(1), ev -> {
                 long sec = (System.currentTimeMillis() - monitorStartMs) / 1000;
+                if(rollingStopAfterMillis>0&&(System.currentTimeMillis()-monitorStartMs>=rollingStopAfterMillis||readyServer.captureBudgetReached())){setStatus("滚动采集达到时长或磁盘限额，正在温和停止…");stopMonitoringInternal(readyServer);return;}
                 elapsedLabel.setText(String.format("已运行 %02d:%02d:%02d",
                         sec / 3600, (sec % 3600) / 60, sec % 60));
             }));
@@ -782,6 +810,7 @@ public class MainController {
                 showProgress(false);
                 setStatusDot(false);
                 setAgentConnectionState("状态: 未连接", "agent-connection-offline");
+                if(baselinePane!=null&&session!=null)baselinePane.captureFinished(session.sessionDirectory(),result.restored());
                 if (result.restored()) {
                     collectorReady = false;
                     refreshSelectionSummary();
@@ -822,7 +851,7 @@ public class MainController {
             setStatus("已暂停输出（agent 持续运行）");
         } else {
             MonitoringRuntime current = traceServer;
-            traceServer.setOnRootNode(node -> callTreePane.addTrace(node, () -> !controllerClosed && traceServer == current));
+            traceServer.setOnRootNode(node -> callTreePane.addTrace(node, () -> !controllerClosed && viewedHistory==null && traceServer == current));
             pauseBtn.setText("暂停输出");
             setStatus("监控中");
         }
@@ -832,6 +861,9 @@ public class MainController {
         if (controllerClosed) return;
         controllerClosed = true;
         if (diagnosticsPane != null) diagnosticsPane.close();
+        if (sessionsPane != null) sessionsPane.close();
+        if (baselinePane != null) baselinePane.close();
+        callTreePane.close();
         classSelectionPane.dispose();
         if (metricsTimeline != null) {
             metricsTimeline.stop();
@@ -897,6 +929,9 @@ public class MainController {
         if (controllerClosed || !targetExitNavigationStarted.compareAndSet(false, true)) return;
 
         if (diagnosticsPane != null) diagnosticsPane.close();
+        if (sessionsPane != null) sessionsPane.close();
+        if (baselinePane != null) baselinePane.close();
+        callTreePane.close();
         monitoring = false;
         paused = false;
         cancelRequested = true;
@@ -1174,32 +1209,55 @@ public class MainController {
         java.io.File selectedDirectory = chooser.showDialog(root.getScene().getWindow());
         if (selectedDirectory == null) return;
 
-        offlineReplayLoading = true;
-        offlineReplayProgressMessage = "正在读取历史 Span 并重建调用链，请稍候...";
-        replayBtn.setDisable(true);
-        refreshBlockingOverlay(offlineReplayProgressMessage);
-        setStatus("正在加载历史会话...");
-
-        Thread loader = new Thread(() -> {
-            try {
-                OfflineTraceReplayLoader.ReplayResult result = offlineTraceReplayLoader.load(selectedDirectory.toPath());
-                Platform.runLater(() -> completeHistoricalReplay(result));
-            } catch (Exception error) {
-                Platform.runLater(() -> failHistoricalReplay(error));
-            }
-        }, "agent-monitor-offline-replay");
-        loader.setDaemon(true);
-        loader.start();
+        selectViewedSession(selectedDirectory.toPath(),true);
     }
 
+    private String restorationText(){return viewedHistory!=null?"还原状态：历史证据模式，请核对原始停止回执。":monitoringSession==null?"还原状态：尚未采集":monitoring?"还原状态：正在采集，等待停止确认":lastSessionStopMessage.isBlank()?"还原状态：请等待会话停止结果":"停止结果："+lastSessionStopMessage;}
+    private void selectViewedSession(Path path,boolean replay){
+        if(controllerClosed)return;
+        if(path!=null&&monitoringSession!=null)try{if(path.toRealPath().equals(monitoringSession.sessionDirectory().toRealPath()))path=null;}catch(java.io.IOException ignored){}
+        if(path!=null&&(traceServer!=null||monitoring)){
+            boolean ownWindow=false;try{ownWindow=monitoringSession!=null&&path.toRealPath().startsWith(monitoringSession.sessionDirectory().toRealPath().resolve("windows"));}catch(java.io.IOException ignored){}
+            if(!ownWindow){setStatus("当前采集期间仅可查看本次滚动窗口；其他历史会话请先停止监控。");return;}
+        }
+        if(path!=null&&path.getFileName()!=null&&path.getFileName().toString().equals("spans"))path=path.getParent();
+        Path previousView=viewedHistory;
+        viewedHistory=path==null?null:path.toAbsolutePath().normalize();
+        if(!java.util.Objects.equals(previousView,viewedHistory))callTreePane.clear();
+        viewingLabel.setText(viewedHistory==null?"查看：本次会话":"查看历史："+viewedHistory.getFileName());viewingLabel.setTooltip(new Tooltip(viewedHistory==null?"本次采集证据":viewedHistory.toString()));
+        if(diagnosticsPane!=null)diagnosticsPane.setViewedSession(viewedHistory);
+        Path selected=viewedHistory!=null?viewedHistory:monitoringSession==null?null:monitoringSession.sessionDirectory();
+        if(sessionsPane!=null)sessionsPane.showSession(selected,restorationText());
+        long version=++replayGeneration;
+        if(!replay)return;
+        if(viewedHistory==null&&(monitoring||traceServer!=null)){callTreePane.beginMonitoringSession();setStatus("已返回本次实时采集，继续接收后续调用。");return;}
+        if(selected==null){callTreePane.clear();return;}
+        replayReturnPage=java.util.Set.of("sessions","diagnostics").contains(workbench.selectedPage())?workbench.selectedPage():"calls";
+        offlineReplayLoading=true;offlineReplayProgressMessage="正在读取历史证据…";refreshBlockingOverlay(offlineReplayProgressMessage);
+        Path directory=selected;
+        Thread loader=new Thread(()->{
+            try {
+                new com.agentmonitor.core.catalog.SessionCatalog().show(directory);
+                // Diagnostic-only sessions are valid workbench contexts even without Span files.
+                boolean hasSpans=OfflineTraceReplayLoader.hasReplayFiles(directory);
+                if(!hasSpans){Platform.runLater(()->{if(version!=replayGeneration||controllerClosed)return;offlineReplayLoading=false;refreshBlockingOverlay("");callTreePane.clear();workbench.selectPage(replayReturnPage.equals("sessions")?"sessions":"diagnostics");setStatus("已加载诊断会话，没有业务调用链。");});return;}
+                var result=offlineTraceReplayLoader.load(directory);
+                Platform.runLater(()->{if(version==replayGeneration)completeHistoricalReplay(result);});
+            }catch(Exception error){Platform.runLater(()->{if(version==replayGeneration){callTreePane.clear();failHistoricalReplay(error);}});}
+        },"agent-monitor-offline-replay");loader.setDaemon(true);loader.start();
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode pendingReplayFocus;
+    private long pendingReplayFocusGeneration;
     private void completeHistoricalReplay(OfflineTraceReplayLoader.ReplayResult result) {
         if (controllerClosed) return;
         offlineReplayLoading = false;
         offlineReplayProgressMessage = "";
         replayBtn.setDisable(false);
         refreshBlockingOverlay("");
-        callTreePane.showOfflineReplay(result.roots().stream().map(com.agentmonitor.app.model.CallNode::fromTrace).toList());
-        showCallsPage();
+        callTreePane.showOfflineTraces(result.roots());
+        if(pendingReplayFocus!=null&&pendingReplayFocusGeneration==replayGeneration){callTreePane.focusCall(pendingReplayFocus);pendingReplayFocus=null;}
+        workbench.selectPage(replayReturnPage);
         String quality = result.hasDegradation()
                 ? "；跳过 " + result.skippedSpans() + " 个，孤儿 " + result.orphanSpans()
                         + " 个，循环 " + result.cyclicSpans() + " 个，文件警告 " + result.warnings().size() + " 项"
@@ -1315,65 +1373,10 @@ public class MainController {
                                           CaptureQuality captureQuality,
                                           SessionRetentionManager.CleanupResult cleanupResult) {
         if (session == null) return;
-        Label resultTitle = new Label(outputDrained ? "采集完成，字节码已还原" : "字节码已还原，采集不完整");
-        resultTitle.getStyleClass().add("session-result-title");
-
-        Label description = new Label(outputDrained
-                ? "字节码已还原，最终报告已在停止流程中写入。"
-                : "字节码已还原，可以开始下一轮监控；本次存在未完成调用、未闭合链路或导出未完成，请结合下方原因检查报告完整性。");
-        description.setWrapText(true);
-        description.getStyleClass().add("hint-label");
-
-        Label location = new Label("会话目录：" + session.sessionDirectory().toAbsolutePath().normalize());
-        location.setWrapText(true);
-        location.getStyleClass().add("hint-label");
-
-        Label feedback = new Label(sessionActionFeedback(completionMessage, captureQuality, cleanupResult));
-        feedback.setWrapText(true);
-        feedback.getStyleClass().add("hint-label");
-
-        Button reportButton = new Button("打开最终报告");
-        reportButton.getStyleClass().add("ghost-btn");
-        reportButton.setOnAction(event -> openSessionArtifact(session.performanceReportPath(), feedback));
-
-        Button directoryButton = new Button("打开会话目录");
-        directoryButton.getStyleClass().add("ghost-btn");
-        directoryButton.setOnAction(event -> openSessionArtifact(session.sessionDirectory(), feedback));
-
-        Button copyPromptButton = new Button("复制 AI 分析提示词");
-        copyPromptButton.getStyleClass().add("ghost-btn");
-        copyPromptButton.setOnAction(event -> copySessionAnalysisPrompt(session, feedback));
-
-        javafx.scene.layout.FlowPane actions = new javafx.scene.layout.FlowPane(8, 8, reportButton, directoryButton, copyPromptButton);
-        VBox content = new VBox(20, resultTitle, description, actions, new Separator(), location, feedback);
-        content.getStyleClass().add("session-result");
-        ScrollPane scroll = new ScrollPane(content); scroll.setFitToWidth(true);
-        workbench.replacePage("sessions", scroll);
         workbench.selectPage("sessions");
-    }
-
-    private void openSessionArtifact(java.nio.file.Path artifact, Label feedback) {
-        SessionArtifactOpener.OpenResult result = SessionArtifactOpener.open(artifact);
-        String message = result.opened() ? result.message() : "未能打开：" + result.message();
-        feedback.setText(message);
-        setStatus(message);
-    }
-
-    private void copySessionAnalysisPrompt(MonitoringSession session, Label feedback) {
-        try {
-            ClipboardContent content = new ClipboardContent();
-            content.putString(SessionAnalysisPrompt.forSession(session));
-            if (Clipboard.getSystemClipboard().setContent(content)) {
-                feedback.setText("AI 分析提示词已复制；将会话目录或报告文件提供给 AI 即可。");
-                setStatus("AI 分析提示词已复制到剪贴板");
-            } else {
-                feedback.setText("未能写入系统剪贴板，请手动复制会话目录。");
-                setStatus("未能写入系统剪贴板");
-            }
-        } catch (IllegalStateException error) {
-            feedback.setText("未能写入系统剪贴板：" + error.getMessage());
-            setStatus("未能写入系统剪贴板");
-        }
+        selectViewedSession(null,false);
+        sessionsPane.setCatalogRoot(session.sessionRootDirectory());
+        sessionsPane.showSession(session.sessionDirectory(),"字节码已还原 · "+(outputDrained?"停止交付已确认":"采集不完整")+"\n"+sessionActionFeedback(completionMessage,captureQuality,cleanupResult));
     }
 
     private static String sessionActionFeedback(String completionMessage, CaptureQuality captureQuality,

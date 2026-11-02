@@ -61,6 +61,7 @@ public class MainApp extends Application {
         mainScene = new Scene(targetSelectionPlaceholder, SELECTOR_WIDTH, SELECTOR_HEIGHT);
         mainScene.getStylesheets().add(
                 getClass().getResource("/com/agentmonitor/app/main.css").toExternalForm());
+        com.agentmonitor.app.ui.DesktopPreferences.get().install(mainScene);
         primaryStage.setScene(mainScene);
         primaryStage.show();
 
@@ -96,6 +97,8 @@ public class MainApp extends Application {
         primaryStage.setHeight(workbenchHeight);
         primaryStage.centerOnScreen();
     }
+
+    @Override public void stop(){com.agentmonitor.app.ui.DesktopPreferences.get().flush();}
 
     public static void main(String[] args) {
         System.setProperty("apple.awt.application.name", "Agent Monitor");

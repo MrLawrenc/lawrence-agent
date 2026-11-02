@@ -32,7 +32,7 @@ public final class PreviewChecks {
                         require(stage.getScene().getWidth() <= 1080, "Compact render uses the resized window");
                         capture(stage.getScene(), "workspace-compact");
                         checkWorkbench(stage, () -> checkWorkspaceActions(stage, () -> checkPackageActions(stage, () -> checkScope(stage, () -> {
-                            try { checkDetailUpdates(stage,()->{try{checkAdvancedConfiguration(stage);checkInspectorReadingPosition(stage);checkCallTree(stage); checkMetrics(stage); checkSelector(stage);}catch(Throwable error){fail(error);finish();}}); }
+                            try { checkDetailUpdates(stage,()->{try{checkAdvancedConfiguration(stage);checkInspectorReadingPosition(stage);checkCallTree(stage); checkMetrics(stage); checkEnhancements(stage,()->checkSelector(stage));}catch(Throwable error){fail(error);finish();}}); }
                             catch (Throwable error) { fail(error); finish(); }
                         }))));
                     } catch (Throwable error) { fail(error); finish(); }
@@ -457,6 +457,117 @@ public final class PreviewChecks {
             } catch(Throwable error){fail(error);}
         });
     }
+    private static void checkEnhancements(Stage owner,Runnable done)throws Exception {
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();
+        EvidenceTablePane evidence=new EvidenceTablePane("数值证据",new String[]{"标识","次数","耗时"},new String[]{"key","count","durationNanos"});
+        var data=json.createArrayNode();for(int i=0;i<10000;i++)data.addObject().put("key","row-"+i).put("count",i).put("durationNanos",i*1000000L);
+        Scene evidenceScene=scene(evidence,1080,720,owner);evidence.setRows(data);
+        var column=evidence.table().getColumns().get(1);column.setSortType(TableColumn.SortType.DESCENDING);evidence.table().getSortOrder().setAll(column);evidence.table().sort();
+        await(()->!evidence.table().getItems().isEmpty()&&evidence.table().getItems().get(0).path("count").asInt()==9999,100,()->{
+            try {
+                require(evidence.table().getItems().size()==500,"Diagnostic sorting runs numerically over all 10000 rows before pagination");
+                require(EvidenceTablePane.format("durationNanos",json.readTree("1250000")).equals("1.25 ms"),"Evidence durations format human-readable units without changing raw values");
+                TextField search=(TextField)evidenceScene.lookup(".text-field");search.setText("row-1");search.setText("row-9999");
+                await(()->evidence.table().getItems().size()==1&&evidence.table().getItems().get(0).path("key").asText().equals("row-9999"),100,()->{
+                    try{require(true,"The latest rapid search wins while background indexing is running");evidence.table().getSelectionModel().selectFirst();capture(evidenceScene,"evidence-numeric-search");evidence.close();checkHistoryFeatures(owner,done);}catch(Throwable error){fail(error);finish();}
+                });
+            }catch(Throwable error){fail(error);finish();}
+        });
+    }
+    private static void checkHistoryFeatures(Stage owner,Runnable done)throws Exception {
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();Path dir=Files.createTempDirectory(Path.of("build"),"workbench-fixture-");Files.createDirectories(dir.resolve("diagnostics"));Files.createDirectories(dir.resolve("reports"));
+        Files.writeString(dir.resolve("session.json"),"{\"application\":\"agent-monitor\",\"schemaVersion\":1,\"sessionId\":\"ui-fixture\",\"startedAt\":\"2026-01-01T00:00:00Z\"}");
+        long started=java.time.Instant.parse("2026-01-01T00:00:00Z").toEpochMilli();StringBuilder metrics=new StringBuilder();for(int i=0;i<300;i++)metrics.append("{\"timestampMillis\":").append(started+i*1000).append(",\"ProcessCpuLoad\":0.5}\n");
+        Files.writeString(dir.resolve("diagnostics/metrics.jsonl"),metrics);Files.writeString(dir.resolve("diagnostics/threads-latest.json"),"{\"threads\":[{\"threadId\":3,\"name\":\"fixture-worker\",\"state\":\"BLOCKED\",\"lockOwnerName\":\"owner\",\"stack\":[\"example.Service.work(Service.java:10)\"]}]}");
+        Files.writeString(dir.resolve("diagnostics/manifest.json"),"{\"sessionId\":\"ui-fixture\",\"status\":\"COMPLETED\",\"samples\":300}");
+        Files.writeString(dir.resolve("reports/performance-report.json"),"{\"schemaVersion\":1,\"sessionId\":\"ui-fixture\",\"status\":\"COMPLETED\",\"captureComplete\":true,\"analysisReady\":true,\"hotspots\":[{\"method\":\"example.Service.work\",\"observedCalls\":20,\"selfNanos\":2000000}],\"diagnosticAggregates\":{}}");
+        DiagnosticsPane diagnostics=new DiagnosticsPane("preview",()->null,()->null);Scene diagnosticScene=scene(diagnostics,1080,720,owner);diagnostics.setViewedSession(dir);
+        await(()->!((javafx.scene.chart.LineChart<?,?>)diagnosticScene.lookup(".chart")).getData().isEmpty(),100,()->{
+            try{
+                var chart=(javafx.scene.chart.LineChart<Number,Number>)diagnosticScene.lookup(".chart");
+                require(chart.getData().get(0).getData().get(0).getXValue().doubleValue()==60,"A 300-sample session keeps the fixed session epoch after its 240-sample window rolls");
+                var capture=(MenuButton)diagnosticScene.lookup("#diagnostics-capture");require(capture.getItems().get(0).isDisable(),"Historical evidence disables live PID diagnostics");
+                require(diagnosticScene.lookup("#diagnostics-investigate")!=null,"Symptom, request, timeline and distributed evidence entry points are available");
+                ((ListView<?>)diagnosticScene.lookup("#diagnostics-sections")).getSelectionModel().select(2);diagnosticScene.getRoot().applyCss();diagnosticScene.getRoot().layout();
+                var table=(TableView<?>)((TabPane)diagnosticScene.lookup("#diagnostics-tabs")).getSelectionModel().getSelectedItem().getContent().lookup(".table-view");
+                await(()->table.getItems().size()==1,100,()->{
+                    try{table.getSelectionModel().selectFirst();after(()->{try{
+                        require(diagnosticScene.getRoot().lookupAll(".text-area").stream().anyMatch(n->((TextArea)n).getText().contains("fixture-worker")),"Selected thread exposes a structured summary and full stack evidence");capture(diagnosticScene,"diagnostics-structured");
+                        diagnostics.close();checkSessionReport(owner,dir,done);
+                    }catch(Throwable error){fail(error);finish();}});}catch(Throwable error){fail(error);finish();}
+                });
+            }catch(Throwable error){fail(error);finish();}
+        });
+    }
+    private static void checkSessionReport(Stage owner,Path dir,Runnable done)throws Exception {
+        var selected=new java.util.concurrent.atomic.AtomicReference<Path>();SessionsPane sessions=new SessionsPane(selected::set,()->{},()->{});Scene sessionScene=scene(sessions,1080,720,owner);sessions.setCatalogRoot(dir);sessions.showSession(dir,"示例停止回执：已还原");
+        await(()->sessionScene.getRoot().lookupAll(".table-view").stream().anyMatch(n->!((TableView<?>)n).getItems().isEmpty()),100,()->after(()->{
+            try{require(sessionScene.getRoot().lookupAll(".label").stream().anyMatch(n->((Label)n).getText().contains("Trace 完整：是")),"Report overview presents Trace completeness independently from restoration and diagnostics");capture(sessionScene,"sessions-report-populated");sessions.close();checkLargeReplay(owner,()->{try{checkUnifiedContext(owner,dir,done);}catch(Throwable error){fail(error);finish();}});}catch(Throwable error){fail(error);finish();}
+        }));
+    }
+    private static void checkLargeReplay(Stage owner,Runnable done)throws Exception {
+        CallTreePane calls=new CallTreePane();Scene scene=scene(calls,1080,720,owner);var roots=new java.util.ArrayList<com.agentmonitor.model.trace.TraceNode>();
+        for(int i=0;i<10000;i++){var root=new com.agentmonitor.model.trace.TraceNode("example.Controller","request"+i,"worker",100+(long)i*1000,false,0);var cursor=root;for(int depth=1;depth<=5;depth++){var child=new com.agentmonitor.model.trace.TraceNode("example.Service",depth==5?"needle"+i:"step","worker",90,false,depth);cursor.addChild(child);cursor=child;}roots.add(root.freeze());}
+        calls.showOfflineTraces(roots);var table=(TreeTableView<com.agentmonitor.app.model.CallNode>)scene.lookup(".call-tree-table");
+        await(()->table.getRoot().getChildren().size()==100,100,()->{
+            try{require(calls.getObservedRootCount()==10000,"Large replay keeps every root in the data model while materializing one page");
+                var duration=table.getColumns().get(2);duration.setSortType(TreeTableColumn.SortType.DESCENDING);table.getSortOrder().setAll(duration);table.sort();
+                await(()->table.getRoot().getChildren().get(0).getValue().getMethodName2().equals("request9999"),100,()->{require(true,"Offline duration sorting runs before pagination across all 10000 roots");((TextField)scene.lookup(".search-field")).setText("example.Service#needle9999");});
+                await(()->table.getRoot().getChildren().size()==1&&table.getExpandedItemCount()>=6,100,()->{
+                    try{require(true,"Deep offline search expands the entire matching ancestor path across all pages");var next=scene.getRoot().lookupAll(".button").stream().filter(n->((Button)n).getText().equals("下个命中")).findFirst().orElseThrow();((Button)next).fire();require(table.getSelectionModel().getSelectedItem().getValue().getMethodName2().equals("needle9999"),"Match navigation selects the actual matching call");capture(scene,"calls-deep-search");calls.close();done.run();}catch(Throwable error){fail(error);finish();}
+                });
+            }catch(Throwable error){fail(error);finish();}
+        });
+    }
+    private static void checkUnifiedContext(Stage owner,Path dir,Runnable done)throws Exception {
+        var controller=new com.agentmonitor.app.controller.MainController(new com.agentmonitor.model.jvm.JvmProcess("preview","Context fixture"));Scene scene=scene(controller.getRoot(),1080,720,owner);
+        var workbench=(WorkbenchPane)scene.lookup("#workbench");workbench.selectPage("sessions");
+        var select=controller.getClass().getDeclaredMethod("selectViewedSession",Path.class,boolean.class);select.setAccessible(true);select.invoke(controller,dir,true);
+        await(()->!scene.lookup(".loading-overlay").isVisible(),100,()->{
+            try{require(workbench.selectedPage().equals("sessions"),"Selecting historical evidence from reports preserves the report page");workbench.selectPage("diagnostics");scene.getRoot().applyCss();scene.getRoot().layout();
+                require(((MenuButton)scene.lookup("#diagnostics-capture")).getItems().get(0).isDisable(),"Report and diagnostic navigation share one historical viewing context");
+                select.invoke(controller,null,true);require(!((MenuButton)scene.lookup("#diagnostics-capture")).getItems().get(0).isDisable(),"Returning to the current context restores live diagnostics");
+                var master=com.agentmonitor.core.model.MonitoringSession.create(dir.resolve("owned-active").toString());var ownWindow=com.agentmonitor.core.model.MonitoringSession.create(master.sessionDirectory().resolve("windows").toString());
+                var sessionField=controller.getClass().getDeclaredField("monitoringSession");sessionField.setAccessible(true);sessionField.set(controller,master);var runningField=controller.getClass().getDeclaredField("monitoring");runningField.setAccessible(true);runningField.set(controller,true);
+                select.invoke(controller,ownWindow.sessionDirectory(),false);require(((MenuButton)scene.lookup("#diagnostics-capture")).getItems().get(0).isDisable(),"Active capture can view its own rolling window without enabling historical PID operations");
+                select.invoke(controller,master.sessionDirectory(),true);require(!((MenuButton)scene.lookup("#diagnostics-capture")).getItems().get(0).isDisable(),"Returning from an active window to its master restores the live context");
+                select.invoke(controller,dir,false);require(!((MenuButton)scene.lookup("#diagnostics-capture")).getItems().get(0).isDisable(),"Active capture cannot mix an unrelated historical session");controller.onWindowClose();
+                CallTreePane calls=new CallTreePane();Scene callScene=scene(calls,1080,720,owner);CallNode root=new CallNode("example.Service","first","worker",100,false,0);root.getChildren().add(new CallNode("example.Dao","child","worker",10,false,1));calls.addRootNode(root);
+                after(()->{try{
+                    var table=(TreeTableView<?>)callScene.lookup(".call-tree-table");TextField liveSearch=(TextField)callScene.lookup(".search-field");liveSearch.setText("example.Service#first");require(table.getRoot().getChildren().size()==1,"Live filtering and match navigation agree on full class names");liveSearch.clear();Button freeze=(Button)callScene.getRoot().lookupAll(".button").stream().filter(n->((Button)n).getText().equals("冻结视图")).findFirst().orElseThrow();freeze.fire();calls.addRootNode(new CallNode("example.Service","second","worker",100,false,0));
+                    after(()->{try{require(table.getRoot().getChildren().size()==1,"Freezing the view preserves the current reading window");freeze.fire();require(table.getRoot().getChildren().size()==2,"Resuming merges calls received during the freeze");calls.close();checkNextRound(owner,done);}catch(Throwable error){fail(error);finish();}});
+                }catch(Throwable error){fail(error);finish();}});
+            }catch(Throwable error){fail(error);finish();}
+        });
+    }
+    private static boolean nextRoundChecked;
+    private static void checkNextRound(Stage owner,Runnable done)throws Exception {
+        if(nextRoundChecked){done.run();return;}nextRoundChecked=true;
+        EvidenceFilters filters=new EvidenceFilters("fixture-combined");Scene filterScene=scene(filters,1080,160,owner);
+        var minimum=(TextField)filterScene.getRoot().lookupAll(".text-field").stream().filter(n->"最小耗时毫秒".equals(n.getAccessibleText())).findFirst().orElseThrow();minimum.setText("100");
+        var errors=(CheckBox)filterScene.lookup(".check-box");errors.setSelected(true);
+        require(!filters.criteria().matches(200000000,false,"main","/orders")&&filters.criteria().matches(200000000,true,"main","/orders"),"Combined time and error predicates must both match");
+        for(String action:List.of("保存视图","清除条件","恢复视图"))((Button)filterScene.getRoot().lookupAll(".button").stream().filter(n->((Button)n).getText().equals(action)).findFirst().orElseThrow()).fire();
+        require(filters.criteria().minimumNanos()==100000000&&filters.criteria().errorsOnly(),"Saved view restores combined predicates");
+        var config=new java.util.concurrent.atomic.AtomicReference<>(com.agentmonitor.model.config.MonitoringConfig.defaults());var captures=new java.util.concurrent.atomic.AtomicInteger();
+        BaselinePane baseline=new BaselinePane(config::get,experiment->{var c=config.get();config.set(new com.agentmonitor.model.config.MonitoringConfig(c.schemaVersion(),c.scope(),c.sampling(),c.output(),c.resource(),c.dependencies(),c.analysis(),c.diagnostics(),c.overhead(),experiment));},captures::incrementAndGet,()->{});
+        Scene baselineScene=scene(baseline,1080,720,owner);var start=(Button)baselineScene.getRoot().lookupAll(".button").stream().filter(n->((Button)n).getText().equals("开始基线采集")).findFirst().orElseThrow();start.fire();require(captures.get()==0,"Baseline capture requires complete and saved declarations");
+        var fields=((javafx.scene.layout.VBox)baseline.getContent()).getChildren().stream().filter(n->n instanceof TextField).map(n->(TextField)n).toList();for(int i=0;i<fields.size();i++)fields.get(i).setText("fixture-"+i);
+        ((Button)baselineScene.getRoot().lookupAll(".button").stream().filter(n->((Button)n).getText().equals("保存到下次采集")).findFirst().orElseThrow()).fire();start.fire();require(captures.get()==1&&config.get().experiment().buildId().equals("fixture-4"),"Baseline guide saves all five experiment fields before invoking capture");capture(baselineScene,"baseline-guide");baseline.close();
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();var rows=json.createArrayNode();rows.addObject().put("method","Controller.request").put("kind","HTTP_SERVER").put("threadName","http-1").put("startedAtMillis",1000).put("endedAtMillis",1100);rows.addObject().put("method","SQL query").put("kind","SQL").put("threadName","http-1").put("startedAtMillis",1020).put("endedAtMillis",1080);rows.addObject().put("kind","jfr").put("eventType","GC").put("startedAtMillis",1050).put("endedAtMillis",1060);
+        var rootWithMissingDepth=new com.agentmonitor.model.trace.TraceNode("example.Root","work","worker",100,false,0);rootWithMissingDepth.addChild(new com.agentmonitor.model.trace.TraceNode("example.Child","work","worker",50,false,0));
+        require(EvidenceTimelinePane.fromTrace(rootWithMissingDepth.freeze()).get(1).path("callDepth").asInt()==1,"Waterfall derives nesting from parent relationships when persisted depth is unavailable");
+        EvidenceTimelinePane timeline=new EvidenceTimelinePane();timeline.setEvents(rows);Scene timelineScene=scene(timeline,1080,720,owner);String original=((Label)timelineScene.lookup("#evidence-timeline-range")).getText();((Button)timelineScene.getRoot().lookupAll(".button").stream().filter(n->((Button)n).getText().equals("放大")).findFirst().orElseThrow()).fire();require(!original.equals(((Label)timelineScene.lookup("#evidence-timeline-range")).getText()),"Zoom changes the actual timestamp viewport");((Button)timelineScene.getRoot().lookupAll(".button").stream().filter(n->((Button)n).getText().equals("重置视窗")).findFirst().orElseThrow()).fire();require(original.equals(((Label)timelineScene.lookup("#evidence-timeline-range")).getText()),"Timeline reset restores the full captured interval");capture(timelineScene,"evidence-waterfall");
+        var preferences=DesktopPreferences.get();Scene preferenceScene=scene(preferences.pane(),1080,720,owner);preferences.install(preferenceScene);
+        var theme=(ComboBox<?>)preferenceScene.lookup("#preferences-theme");var font=(ComboBox<?>)preferenceScene.lookup("#preferences-font");
+        require(theme.isFocusTraversable()&&theme.queryAccessibleAttribute(javafx.scene.AccessibleAttribute.TEXT)!=null,"Theme choice exposes a native accessibility name and keyboard focus");
+        theme.getSelectionModel().select(1);font.getSelectionModel().select(4);preferenceScene.getRoot().applyCss();preferenceScene.getRoot().layout();capture(preferenceScene,"preferences-dark-large");
+        require(preferenceScene.getStylesheets().stream().anyMatch(url->url.contains("agent-monitor-desktop-")),"Dark theme and 150 percent text use the generated native stylesheet");
+        var largeController=new com.agentmonitor.app.controller.MainController(new com.agentmonitor.model.jvm.JvmProcess("preview","Large text fixture"));Scene largeScene=scene(largeController.getRoot(),1080,720,owner);preferences.install(largeScene);largeScene.getRoot().applyCss();largeScene.getRoot().layout();
+        var largeStart=largeScene.lookup("#capture-start");require(largeStart.localToScene(largeStart.getBoundsInLocal()).getMaxX()<=1080,"Large-font dark workbench keeps capture controls inside the compact viewport");capture(largeScene,"workspace-dark-large");largeController.onWindowClose();
+        preferences.flush();require(Files.isRegularFile(Path.of(System.getProperty("agentmonitor.ui.preferences"))),"Personal view preferences are persisted outside capture configuration");
+        theme.getSelectionModel().select(0);font.getSelectionModel().select(1);preferences.flush();WorkflowChecks.run(owner,done,error->{fail(error);finish();});
+    }
     private static void checkMetrics(Stage owner) throws Exception {
         JvmMetricsPane metrics = new JvmMetricsPane();
         Scene scene = scene(metrics, 340, 620, owner);
@@ -530,7 +641,7 @@ public final class PreviewChecks {
         scene.getRoot().applyCss(); scene.getRoot().layout();
         return scene;
     }
-    private static void capture(Scene scene, String name) throws Exception {
+    static void capture(Scene scene, String name) throws Exception {
         scene.getRoot().applyCss(); scene.getRoot().layout();
         WritableImage image = scene.getRoot().snapshot(null, null);
         BufferedImage png = new BufferedImage((int)image.getWidth(), (int)image.getHeight(), BufferedImage.TYPE_INT_ARGB);

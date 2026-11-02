@@ -414,3 +414,8 @@
 .diagnostics-pane .chart-vertical-grid-lines { -fx-stroke: transparent; }
 .diagnostics-pane .chart-horizontal-grid-lines { -fx-stroke: -ui-border; }
 .diagnostics-pane .text-area { -fx-font-family: "Menlo", "Consolas", monospace; -fx-font-size: 12; }
+
+/* Evidence inspection uses the same flat workspace as the main tables. */
+.evidence-details > .tab-header-area { -fx-padding: 0; -fx-background-color: white; }
+.evidence-details > .tab-header-area > .tab-header-background { -fx-background-color: transparent; }
+.tree-table-row-cell:search-match .call-method-name { -fx-font-weight: bold; -fx-underline: true; }
