@@ -87,7 +87,7 @@ public final class BaselinePane extends ScrollPane implements AutoCloseable {
             if(fields.get(4).getText().equals(beforeSession.build())){status.setText("请先更新并保存变更后的 buildId，区分两次代码版本。");return;}
         }
         pendingRole=role;updateActions();
-        if(!capture.getAsBoolean()){pendingRole=null;runningSession=null;status.setText("尚未开始采集，请检查采集范围与当前状态后重试。");updateActions();}
+        if(!capture.getAsBoolean()){BoundSession previous=role.equals("before")?beforeSession:afterSession;DesktopPreferences.get().put("experiment."+role,previous==null?"":previous.directory().toString());pendingRole=null;runningSession=null;status.setText("尚未开始采集，请检查采集范围与当前状态后重试。");updateActions();}
         else status.setText((role.equals("before")?"基线":"变更后")+"采集中；停止并确认还原后自动绑定会话。");
     }
     public void captureStarted(Path session){if(pendingRole!=null){runningSession=session.toAbsolutePath().normalize();DesktopPreferences.get().put("experiment."+pendingRole,runningSession.toString());}}
@@ -95,7 +95,9 @@ public final class BaselinePane extends ScrollPane implements AutoCloseable {
         if(pendingRole==null||runningSession==null||!runningSession.equals(session.toAbsolutePath().normalize()))return;
         String role=pendingRole;pendingRole=null;runningSession=null;
         status.setText(restored?"采集已停止，正在核验并绑定实验会话。":"还原未确认；保留会话路径，请核对停止回执。不会自动开始下一次采集。");
-        if(restored)bindSession(role,session,false);updateActions();
+        if(restored)bindSession(role,session,false);
+        else{if(role.equals("before"))beforeSession=null;else afterSession=null;(role.equals("before")?beforeStatus:afterStatus).setText("还原未确认；请核对停止回执：\n"+session);}
+        updateActions();
     }
     private void updateActions(){boolean running=pendingRole!=null;baseline.setDisable(running);after.setDisable(running||beforeSession==null||!beforeSession.reasons().isEmpty());bindingControls.forEach(c->c.setDisable(running));compare.setDisable(running||!loading.isEmpty()||beforeSession==null||afterSession==null||(beforeSession.directory().equals(afterSession.directory())||beforeSession.sessionId().equals(afterSession.sessionId())));}
     private MonitoringConfig.Experiment declaration(){return new MonitoringConfig.Experiment(fields.get(0).getText(),fields.get(1).getText(),fields.get(2).getText(),fields.get(3).getText(),fields.get(4).getText());}

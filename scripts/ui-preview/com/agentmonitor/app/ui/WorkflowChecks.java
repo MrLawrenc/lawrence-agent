@@ -51,9 +51,23 @@ final class WorkflowChecks {
                     require(((Label)pane.lookup("#diagnostics-job-status")).getText().contains("fixture failure"),"Failed task keeps its actual reason next to retry");
                     ((Button)pane.lookup("#diagnostics-job-retry")).fire();
                     await(()->((Label)pane.lookup("#diagnostics-job-status")).getText().contains("已完成"),()->{
-                        require(attempts.get()==2,"Retry invokes the original operation once");PreviewChecks.capture(scene,"workflow-task-retry");pane.close();timelines();
+                        require(attempts.get()==2,"Retry invokes the original operation once");PreviewChecks.capture(scene,"workflow-task-retry");pane.close();resolvers();
                     });
                 });
+            });
+        });
+    }
+    private void resolvers(){
+        var pane=new EvidenceTablePane("核验证据",new String[]{"方法"},new String[]{"method"});resources.add(pane);
+        var release=new CountDownLatch(1);resources.add(release::countDown);
+        pane.setResolver(row->{if(row.path("evidenceId").asText().equals("second"))release.await();return row;});
+        var rows=json.createArrayNode();rows.addObject().put("evidenceId","first").put("method","old-method");rows.addObject().put("evidenceId","second").put("method","new-method");pane.setRows(rows);show(pane);
+        await(()->pane.table().getItems().size()==2,()->{
+            pane.table().getSelectionModel().select(0);
+            await(()->pane.lookupAll(".text-area").stream().anyMatch(n->((TextArea)n).getText().contains("old-method")),()->{
+                pane.table().getSelectionModel().select(1);
+                require(pane.lookupAll(".text-area").stream().noneMatch(n->((TextArea)n).getText().contains("old-method")),"Selecting another source clears stale evidence while verification is pending");
+                release.countDown();await(()->pane.lookupAll(".text-area").stream().anyMatch(n->((TextArea)n).getText().contains("new-method")),()->{pane.close();timelines();});
             });
         });
     }
@@ -125,7 +139,8 @@ final class WorkflowChecks {
                 await(()->((Label)pane.lookup("#experiment-after-status")).getText().contains(before.sessionId()),()->{
                     require(pane.lookup("#experiment-compare").isDisabled(),"The same logical capture cannot occupy both experiment roles");
                     Path bad=Files.createTempDirectory(Path.of("build/ui-preview"),"invalid-experiment-");pane.bindSession("after",bad,false);
-                    await(()->((Label)pane.lookup("#experiment-after-status")).getText().contains("绑定失败"),()->{require(pane.lookup("#experiment-compare").isDisabled(),"Invalid bindings retain an actionable error and block comparison");pane.close();close();done.run();});
+                    await(()->((Label)pane.lookup("#experiment-after-status")).getText().contains("绑定失败"),()->{require(pane.lookup("#experiment-compare").isDisabled(),"Invalid bindings retain an actionable error and block comparison");((Button)pane.lookup("#experiment-start-before")).fire();pane.captureFinished(after.sessionDirectory(),false);
+                        require(((Label)pane.lookup("#experiment-before-status")).getText().contains("还原未确认")&&pane.lookup("#experiment-compare").isDisabled(),"An unconfirmed stop clears the attempted binding and blocks comparison");pane.close();close();done.run();});
                 });
             });
         });

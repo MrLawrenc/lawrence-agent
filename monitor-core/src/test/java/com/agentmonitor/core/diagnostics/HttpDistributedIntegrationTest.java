@@ -15,9 +15,12 @@ import static org.junit.jupiter.api.Assertions.*;
 class HttpDistributedIntegrationTest {
     @TempDir(cleanup=org.junit.jupiter.api.io.CleanupMode.ON_SUCCESS) Path directory;
     private final List<Process> children=new ArrayList<>();
+    private final List<Thread> logReaders=new ArrayList<>();
     private int redisPort;
     private Process launch(String role,String downstream)throws Exception{
-        Path base=Files.createDirectories(directory.resolve(role));Process child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin/java").toString(),"-Djava.rmi.server.hostname=127.0.0.1","-Dagent.test.redis.port="+redisPort,"-cp",System.getProperty("java.class.path"),"agentfixtures.http.HttpServiceTarget",role,downstream,base.toString()).redirectError(base.resolve("target.err").toFile()).start();children.add(child);return child;
+        Path base=Files.createDirectories(directory.resolve(role));Process child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin/java").toString(),"-Djava.rmi.server.hostname=127.0.0.1","-Dagent.test.redis.port="+redisPort,"-cp",System.getProperty("java.class.path"),"agentfixtures.http.HttpServiceTarget",role,downstream,base.toString()).start();children.add(child);
+        Thread log=new Thread(()->{try(var input=child.getErrorStream();var output=Files.newOutputStream(base.resolve("target.err"))){input.transferTo(output);}catch(java.io.IOException error){throw new java.io.UncheckedIOException(error);}},"owned-http-stderr-"+role);
+        log.setDaemon(true);logReaders.add(log);log.start();return child;
     }
     private String address(Process child)throws Exception{String line=child.inputReader().readLine();assertNotNull(line,"Target failed: "+directory);assertTrue(line.startsWith("READY "),line);return "http://127.0.0.1:"+line.substring(6);}
     // Exact-count transport assertions use a fixed policy; adaptive sampling has dedicated tests.
@@ -71,6 +74,11 @@ class HttpDistributedIntegrationTest {
             }
             var result=Map.of("joinedTrace",new DistributedTrace().correlate(durable,root.getTraceId()),"requests",am,"diagnosis",new SymptomDiagnosis().analyze(durable.get(0),"errors"),"sessions",durable.stream().map(Path::toString).toList(),"realJvms",3);
             String encoded=json.writerWithDefaultPrettyPrinter().writeValueAsString(result);Files.writeString(saved.resolve("result.json"),encoded);Files.writeString(artifact.resolve("result.json"),encoded);Files.writeString(artifact.resolve("latest.txt"),saved.toString());
-        }finally{for(Process child:children){child.destroyForcibly();child.waitFor(5,TimeUnit.SECONDS);}}
+        }finally{
+            // Let each owned fixture stop its container and close stderr before TempDir cleanup.
+            for(Process child:children)if(child.isAlive())try{child.getOutputStream().write(10);child.getOutputStream().close();}catch(java.io.IOException ignored){}
+            for(Process child:children){assertTrue(child.waitFor(10,TimeUnit.SECONDS),"Owned HTTP fixture did not exit: "+child.pid());child.getInputStream().close();}
+            for(Thread log:logReaders){log.join(5000);assertFalse(log.isAlive(),"stderr pump must close its evidence file before cleanup");}
+        }
     }
 }

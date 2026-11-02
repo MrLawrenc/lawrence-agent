@@ -114,6 +114,7 @@ public final class EvidenceTablePane extends VBox implements AutoCloseable {
         long version=++detailGeneration;
         if(row==null){raw.clear();summary.clear();return;}
         Resolver selectedResolver=resolver;
+        if(selectedResolver!=null){summary.setText("正在读取并核验所选证据…");raw.clear();}
         worker.submit(()->{
             JsonNode resolved=row;
             if(selectedResolver!=null)try{resolved=selectedResolver.resolve(row);}catch(Exception error){var failed=row.deepCopy();if(failed.isObject())((com.fasterxml.jackson.databind.node.ObjectNode)failed).put("核验失败",Objects.toString(error.getMessage(),error.getClass().getSimpleName()));resolved=failed;}

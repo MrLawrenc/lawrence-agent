@@ -100,7 +100,7 @@ class NettySpanExporterTest {
     }
 
     @Test
-    void closeCancelsAReconnectScheduledByDisconnect() throws Exception {
+    void closeEndsAnyReconnectAndPreventsFurtherConnections() throws Exception {
         try (ServerSocket collector = new ServerSocket(0)) {
             NettySpanExporter exporter = newExporter(collector.getLocalPort());
             try {
@@ -110,10 +110,18 @@ class NettySpanExporterTest {
                     first.socket.close();
                 }
 
-                // Local close notification is fast; this is deliberately less than the 100ms
-                // first retry delay, so close() must cancel the pending task before it fires.
-                Thread.sleep(40);
                 exporter.close();
+                // A busy runner can complete TCP reconnect before close() gets CPU. Such a
+                // backlog channel must be closed, and no subsequent retry may connect.
+                collector.setSoTimeout(200);
+                int backlog=0;
+                try {
+                    while(true)try(Socket pending=collector.accept()) {
+                        assertTrue(++backlog<=1,"at most the already-started reconnect can remain queued");
+                        pending.setSoTimeout(IO_TIMEOUT_MILLIS);
+                        assertTrue(pending.getInputStream().readNBytes(4096).length<4096,"closed channel must reach EOF");
+                    }
+                }catch(SocketTimeoutException expected) { }
                 assertNoIncomingConnection(collector, 500);
             } finally {
                 exporter.close();
