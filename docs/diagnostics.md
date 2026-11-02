@@ -126,16 +126,18 @@ monitor diag heap-dump --pid 12345 --output ./heap.hprof
 
 诊断任务显示当前阶段与实际用时，支持请求取消及失败后重试。JFR 录制等待、事件聚合与索引循环在共享 core 检查点响应取消；只有资源关闭完成后才显示取消完成，关闭失败显示错误。堆转储、JMX 调用和运行中的 asprof 等目标端操作不会被强行中断；界面会说明需等待该步骤结束。关闭工作台时会请求取消并等待本任务清理，已有证据文件保留，CLI stdout 契约不变。
 
+JFR 帧缺少方法元数据时保留未知帧占位，在 `limits.unresolvedFrameOccurrences` 记录出现次数；时间线标明未解析帧，不把占位当作已识别的业务方法。
+
 「界面偏好」提供浅 / 深主题、85%–150% 字号和紧凑 / 舒适密度。个人设置默认保存在 `~/.agent-monitor/desktop-preferences.json`，与采集 YAML 分开；测试通过 `agentmonitor.ui.preferences` 隔离路径。设置写入去抖，正常退出时刷新；读写失败仅反馈界面偏好，不改变采集事实。
 
 ## 桌面与长时验证
 
 - `./gradlew :monitor-app:uiPreview --args=--verify`：真实控件的交互、窄窗口、数值排序、深层搜索、组合条件、实验声明、主题大字号及可访问名称检查。
 - `.github/workflows/desktop-validation.yml`：macOS / Windows / Linux 的共享 Java 回归、独立 GUI 与真实诊断证据渲染检查；Windows/Linux 请求 1.0 / 1.5 UI scale，macOS 记录原生输出 scale，日志均记录实际输出 / render scale；Linux 使用 Xvfb。工作流存在不代表已在远端运行。
-- `python3 scripts/desktop-soak/run.py --duration 3660 --output <新的目录>`：编译并拥有一个独立目标 JVM，复制当前 CLI 分发，绑定 PID / 启动身份，滚动采集并记录 `resources.jsonl`、停止还原与目标存活。先重建 CLI shadow JAR；不会选择已有业务进程。发生还原不确定时保留目标与证据。
+- `python3 scripts/desktop-soak/run.py --duration 3660 --output <新的目录>`：编译并拥有一个独立目标 JVM，复制当前 CLI 分发，绑定 PID / 启动身份，滚动采集并记录 `resources.jsonl`、停止还原与目标存活。先重建 CLI shadow JAR；不会选择已有业务进程。新运行同时记录单调时钟用时、复制分发的 SHA256；macOS 以与采集进程绑定的 caffeinate 防止空闲休眠，结束时释放该辅助进程。发生还原不确定时保留目标与证据。
 - `./gradlew :monitor-app:uiSoak -PsoakSession=<该自建会话> -PsoakSeconds=3660`：只读实时证据的 JavaFX 长时检查，输出 `monitor-app/build/ui-soak/<时间>/pulses.jsonl` 与最终 summary，不额外 Attach。
 
-长时任务结束后，运行 `python3 scripts/desktop-soak/summarize.py --capture <run目录> --ui <ui-soak输出目录>` 核验时长、原始清单、还原与归档状态，并生成资源与 pulse 统计。中断或不足一小时不会被当作小时级通过。
+长时任务结束后，运行 `python3 scripts/desktop-soak/summarize.py --capture <run目录> --ui <ui-soak输出目录>` 核验时长、原始计数、报告身份、可分析状态、还原与归档状态，并生成资源与 pulse 统计。只检查采集时可省略 `--ui`，结果明确标为 capture_only，不声明 UI 长时通过。中断或不足一小时不会被当作小时级通过；单调计时与墙钟分别记录，休眠 / 恢复造成的采样空档单独列出，完整性通过不代表连续无间断运行。
 
 自动化可检查控件的可访问名称、焦点与键盘动作；VoiceOver / NVDA / Orca 的实际朗读、操作系统 DPI 与平台字体仍需在对应系统实测，不把语义检查等同于屏幕阅读器认证。长时结果属于指定 JVM、配置、机器和版本，不代表生产开销保证或无内存泄漏证明。
 

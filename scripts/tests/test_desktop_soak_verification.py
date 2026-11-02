@@ -36,6 +36,7 @@ class DesktopSoakVerificationTest(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertEqual('capture_only', result['scope'])
         self.assertIsNone(result['uiElapsedSeconds'])
+        self.assertIsNone(result['targetRss']['peakBytes'])
 
     def test_long_wall_time_cannot_replace_recorded_active_duration(self):
         state = json.loads((self.run / 'status.json').read_text())

@@ -52,7 +52,7 @@ def main():
     def memory(key):
         values = [row[key] for row in resources if type(row.get(key)) in (int, float)]
         count = max(1, len(values) // 4)
-        return {'samples': len(values), 'peakBytes': max(values, default=0), 'firstQuartileMedianBytes': statistics.median(values[:count]) if values else None, 'lastQuartileMedianBytes': statistics.median(values[-count:]) if values else None}
+        return {'samples': len(values), 'peakBytes': max(values, default=None), 'firstQuartileMedianBytes': statistics.median(values[:count]) if values else None, 'lastQuartileMedianBytes': statistics.median(values[-count:]) if values else None}
 
     gaps = [max(0, b['timestampMillis'] - a['timestampMillis']) for a, b in zip(resources, resources[1:])]
     verification = {

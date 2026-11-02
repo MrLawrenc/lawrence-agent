@@ -20,7 +20,7 @@ def rss(pid):
     try:
         value = subprocess.check_output(['ps', '-o', 'rss=', '-p', str(pid)], text=True).strip()
         return int(value) * 1024 if value else None
-    except (ValueError, subprocess.CalledProcessError):
+    except (OSError, ValueError, subprocess.CalledProcessError):
         return None
 
 

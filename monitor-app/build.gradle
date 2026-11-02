@@ -190,6 +190,10 @@ tasks.register('diagnosticsPreview', JavaExec) {
     dependsOn tasks.named('classes'), tasks.named('diagnosticsPreviewClasses')
     classpath = sourceSets.diagnosticsPreview.runtimeClasspath + sourceSets.main.output
     mainClass = 'com.agentmonitor.app.ui.DiagnosticsPreview'
+    maxHeapSize = providers.gradleProperty('uiMaxHeap').getOrElse('512m')
+    systemProperty 'agentmonitor.ui.preferences', layout.buildDirectory.file('diagnostics-preview/preferences.json').get().asFile.absolutePath
+    systemProperty 'glass.gtk.uiScale', providers.gradleProperty('uiScale').getOrElse('1.0')
+    systemProperty 'glass.win.uiScale', providers.gradleProperty('uiScale').getOrElse('1.0')
     doFirst {
         jvmArgs '--module-path', configurations.diagnosticsPreviewRuntimeClasspath.files
                 .findAll { it.name.startsWith('javafx-') }.collect { it.absolutePath }.join(File.pathSeparator),

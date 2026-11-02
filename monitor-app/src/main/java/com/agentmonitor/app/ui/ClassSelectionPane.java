@@ -97,7 +97,9 @@ public class ClassSelectionPane extends VBox {
         ruleSummary.getStyleClass().add("scope-rule-summary");ruleSummary.setId("scope-rule-summary");
         includedRuleLabel.setId("scope-included-rules");excludedPackageLabel.setId("scope-excluded-packages");
         for(Label row:List.of(includedRuleLabel,excludedPackageLabel)){
-            row.setMaxWidth(420);row.setTextOverrun(OverrunStyle.ELLIPSIS);row.getStyleClass().add("scope-rule-summary");
+            row.maxWidthProperty().bind(javafx.beans.binding.Bindings.createDoubleBinding(
+                    ()->Math.max(140,Math.min(420,(getWidth()-ruleSummary.prefWidth(-1)-40)/2)),
+                    widthProperty(),ruleSummary.textProperty(),ruleSummary.fontProperty()));row.setTextOverrun(OverrunStyle.ELLIPSIS);row.getStyleClass().add("scope-rule-summary");
             Tooltip complete=new Tooltip();complete.setWrapText(true);complete.setMaxWidth(600);complete.textProperty().bind(row.textProperty());row.setTooltip(complete);
         }
         packageSearchField.setPromptText("查找包名"); packageSearchField.setId("scope-package-search"); packageSearchField.getStyleClass().add("search-field");
