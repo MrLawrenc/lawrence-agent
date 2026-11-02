@@ -147,8 +147,12 @@ public final class PreviewChecks {
                 require(apply.localToScene(apply.getBoundsInLocal()).getMaxY()<scene.getHeight()-40,"Rule application remains above the footer at the 1080 by 720 minimum");
                 capture(scene,"workspace-rules");
             }catch(Exception error){fail(error);}
-            ((Button)scope.lookup("#scope-edit-rules")).fire();
-            captureWorkbenchPages(owner,workbench,List.of("calls","overview","advanced","diagnostics","sessions"),0,next);
+            Button returnToBrowser=(Button)scope.lookup("#scope-edit-rules");
+            await(()->!returnToBrowser.isDisabled(),200,()->{
+                if(returnToBrowser.getText().equals("返回包与类"))returnToBrowser.fire();
+                require(returnToBrowser.getText().equals("编辑排除规则"),"Rule editor returns to package browsing before navigation");
+                captureWorkbenchPages(owner,workbench,List.of("calls","overview","advanced","diagnostics","sessions"),0,next);
+            });
         });
     }
     private static javafx.scene.input.KeyEvent shortcut(javafx.scene.input.KeyCode code){
@@ -171,8 +175,9 @@ public final class PreviewChecks {
                 var summary=(Label)scope.lookup("#scope-included-rules");
                 require(summary.getWidth()<=420&&summary.getTooltip().getText().contains(longPackage),"Long package rules stay bounded with the full identifier available in a tooltip");
                 Node table=scope.lookup("#scope-class-table");
-                require(table.localToScene(table.getBoundsInLocal()).getMaxY()<owner.getScene().getHeight()-70&&table.getBoundsInLocal().getHeight()>100,"Long rules retain a usable table at the minimum window size");
                 capture(owner.getScene(),"workspace-long-rules");
+                System.out.println("SCOPE_TABLE_BOUNDS height="+table.getBoundsInLocal().getHeight()+" maxY="+table.localToScene(table.getBoundsInLocal()).getMaxY()+" sceneHeight="+owner.getScene().getHeight());
+                require(table.localToScene(table.getBoundsInLocal()).getMaxY()<owner.getScene().getHeight()-70&&table.getBoundsInLocal().getHeight()>100,"Long rules retain a usable table at the minimum window size");
             }catch(Exception error){fail(error);}
             scope.applyConfiguration(packages,classes,excluded,methods);next.run();
         });

@@ -33,12 +33,12 @@ public final class DiagnosticsPreview extends Application {
                 var threads=(TableView<?>)tabs.getTabs().get(2).getContent().lookup(".table-view");int total=threads.getItems().size();require(total>1,"Thread evidence renders");
                 var search=(TextField)tabs.getTabs().get(2).getContent().lookup(".text-field");search.setText("unfinished-business");
                 window.setWidth(820);window.setHeight(640);
-                after(300,()->{try{
+                await(()->threads.getItems().size()==1,()->{try{
                     require(threads.getItems().size()==1,"Thread search filters actual evidence asynchronously");threads.getSelectionModel().selectFirst();
                     capture(window.getScene(),"diagnostics-compact");
                     var refresh=(Button)window.getScene().lookup("#diagnostics-refresh");refresh.fire();
                     var capture=(MenuButton)window.getScene().lookup("#diagnostics-capture");require(!capture.isDisabled(),"Evidence refresh keeps diagnostic actions visually stable");
-                    after(900,()->{try{
+                    await(()->threads.getSelectionModel().getSelectedItem()!=null&&((TextArea)tabs.getTabs().get(2).getContent().lookup(".text-area")).getText().contains("unfinished-business"),()->{try{
                         require(threads.getSelectionModel().getSelectedItem()!=null,"Refresh preserves thread selection");
                         require(((TextArea)tabs.getTabs().get(2).getContent().lookup(".text-area")).getText().contains("unfinished-business"),"Refresh preserves selected details");
                         tabs.getSelectionModel().select(8);window.getScene().getRoot().applyCss();window.getScene().getRoot().layout();
@@ -63,6 +63,12 @@ public final class DiagnosticsPreview extends Application {
                 }catch(Exception e){e.printStackTrace();window.close();Platform.exit();System.exit(1);}});
             }catch(Throwable e){e.printStackTrace();window.close();Platform.exit();System.exit(1);}
         });
+    }
+    private static void await(java.util.function.BooleanSupplier ready,Runnable action){await(ready,System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(12),action);}
+    private static void await(java.util.function.BooleanSupplier ready,long deadline,Runnable action){
+        if(ready.getAsBoolean()){action.run();return;}
+        if(System.nanoTime()>deadline){System.err.println("FAIL Diagnostic UI did not settle within 12 seconds");Platform.exit();System.exit(1);return;}
+        after(100,()->await(ready,deadline,action));
     }
     private static void require(boolean condition,String message){if(!condition){failures++;System.err.println("FAIL "+message);}else System.out.println("PASS "+message);}
     private static void after(int millis,Runnable action){var pause=new PauseTransition(Duration.millis(millis));pause.setOnFinished(e->action.run());pause.play();}

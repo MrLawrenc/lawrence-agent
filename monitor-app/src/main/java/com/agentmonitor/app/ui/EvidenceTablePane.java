@@ -22,8 +22,9 @@ public final class EvidenceTablePane extends VBox implements AutoCloseable {
     private final Button previous=new Button("上一页"),next=new Button("下一页");
     private final ExecutorService worker=Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"evidence-table");t.setDaemon(true);return t;});
     private final javafx.animation.PauseTransition delay=new javafx.animation.PauseTransition(Duration.millis(140));
-    private List<Row> rows=List.of();
-    private JsonNode source, indexedSource;
+    private record Index(JsonNode source,List<Row> rows) { }
+    private final java.util.concurrent.atomic.AtomicReference<Index> index=new java.util.concurrent.atomic.AtomicReference<>(new Index(null,List.of()));
+    private JsonNode source;
     private long generation;
     private int page;
     private Future<?> pending;
@@ -83,8 +84,8 @@ public final class EvidenceTablePane extends VBox implements AutoCloseable {
     public void focusEvidence(JsonNode row){focusIdentity=identity(row);search.clear();filters.clear();delay.stop();schedule();}
 
     public void setRows(JsonNode data) {
-        if(data.equals(source))return;source=data;
-        if(data.isEmpty()){generation++;if(pending!=null)pending.cancel(true);rows=List.of();table.getItems().clear();count.setText("暂无证据");previous.setDisable(true);next.setDisable(true);return;}
+        if(closed||data.equals(source))return;source=data;
+        if(data.isEmpty()){generation++;if(pending!=null)pending.cancel(true);index.set(new Index(null,List.of()));table.getItems().clear();count.setText("暂无证据");previous.setDisable(true);next.setDisable(true);return;}
         schedule();
     }
     private void schedule() {
@@ -94,8 +95,14 @@ public final class EvidenceTablePane extends VBox implements AutoCloseable {
         List<Map.Entry<String,Boolean>> sorting=table.getSortOrder().stream().map(c->Map.entry(c.getUserData().toString(),c.getSortType()==TableColumn.SortType.DESCENDING)).toList();
         count.setText("正在筛选…");
         pending=worker.submit(()->{
-            if(snapshotSource!=indexedSource){List<Row> prepared=new ArrayList<>();if(snapshotSource!=null&&snapshotSource.isArray())for(JsonNode value:snapshotSource){if(Thread.currentThread().isInterrupted())return;prepared.add(new Row(value,value.toString().toLowerCase(Locale.ROOT)));}rows=List.copyOf(prepared);indexedSource=snapshotSource;}
-            List<Row> snapshot=rows;
+            Index cached=index.get();
+            List<Row> snapshot=cached.rows();
+            if(snapshotSource!=cached.source()){
+                List<Row> prepared=new ArrayList<>();
+                if(snapshotSource!=null&&snapshotSource.isArray())for(JsonNode value:snapshotSource){if(Thread.currentThread().isInterrupted())return;prepared.add(new Row(value,value.toString().toLowerCase(Locale.ROOT)));}
+                snapshot=List.copyOf(prepared);index.compareAndSet(cached,new Index(snapshotSource,snapshot));
+            }
+            int sourceSize=snapshot.size();
             List<JsonNode> matched=new ArrayList<>();for(Row row:snapshot){if(Thread.currentThread().isInterrupted())return;if(row.search().contains(query)&&criteria.matches(row.value())&&(interval==null||interval.includes(row.value())))matched.add(row.value());}
             if(!sorting.isEmpty())matched.sort((a,b)->{for(var sort:sorting){int c=compareValues(a.path(sort.getKey()),b.path(sort.getKey()));if(c!=0)return sort.getValue()?-c:c;}return 0;});
             int requestedPage=requested;
@@ -105,7 +112,7 @@ public final class EvidenceTablePane extends VBox implements AutoCloseable {
             Platform.runLater(()->{if(closed||version!=generation)return;page=current;submitting=true;
                 table.getItems().setAll(values);for(JsonNode row:values)if(!identity.isEmpty()&&identity.equals(identity(row))){table.getSelectionModel().select(row);break;}
                 submitting=false;updateDetails(table.getSelectionModel().getSelectedItem());onSelection.accept(table.getSelectionModel().getSelectedItem());
-                count.setText("匹配 "+size+" / 全部 "+snapshot.size()+" · 第 "+(current+1)+" / "+pages+" 页（全局搜索与排序）"+(interval==null?"":" · 时间范围已筛选；无时间戳证据不显示")+"");previous.setDisable(current==0);next.setDisable(current>=pages-1);
+                count.setText("匹配 "+size+" / 全部 "+sourceSize+" · 第 "+(current+1)+" / "+pages+" 页（全局搜索与排序）"+(interval==null?"":" · 时间范围已筛选；无时间戳证据不显示")+"");previous.setDisable(current==0);next.setDisable(current>=pages-1);
             });
         });
     }
@@ -146,5 +153,5 @@ public final class EvidenceTablePane extends VBox implements AutoCloseable {
     public static String duration(double nanos){if(Math.abs(nanos)<1000)return String.format(Locale.ROOT,"%.0f ns",nanos);if(Math.abs(nanos)<1e6)return String.format(Locale.ROOT,"%.2f μs",nanos/1e3);if(Math.abs(nanos)<1e9)return String.format(Locale.ROOT,"%.2f ms",nanos/1e6);return String.format(Locale.ROOT,"%.2f s",nanos/1e9);}
     private static String label(String key){return switch(key){case "stack","stackTrace"->"调用栈";case "lockOwnerName"->"锁持有者";case "lock"->"等待锁";case "method"->"方法";case "key"->"SQL / 聚合标识";case "observedCalls"->"观测次数";case "observedErrors"->"观测异常数";case "inclusiveNanos"->"累计耗时（包含子调用）";case "maxNanos"->"最大耗时";case "queueNanos"->"排队耗时";case "executionNanos"->"执行耗时";case "traceId"->"Trace ID";case "threadId"->"Java 线程 ID";default->key;};}
     private static String identity(JsonNode row){if(row==null)return "";for(String key:List.of("evidenceId","spanId","callPath","threadId","traceId","key","poolLabel","name","className"))if(row.has(key))return key+":"+(row.path(key).isContainerNode()?row.path(key).toString():row.path(key).asText())+(row.has("loader")?row.path("loader").asText():"");return row.toString();}
-    @Override public void close(){closed=true;generation++;delay.stop();if(pending!=null)pending.cancel(true);worker.shutdownNow();}
+    @Override public void close(){closed=true;generation++;index.set(new Index(null,List.of()));source=null;delay.stop();if(pending!=null)pending.cancel(true);worker.shutdownNow();}
 }

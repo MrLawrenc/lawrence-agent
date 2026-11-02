@@ -67,7 +67,10 @@ final class WorkflowChecks {
             await(()->pane.lookupAll(".text-area").stream().anyMatch(n->((TextArea)n).getText().contains("old-method")),()->{
                 pane.table().getSelectionModel().select(1);
                 require(pane.lookupAll(".text-area").stream().noneMatch(n->((TextArea)n).getText().contains("old-method")),"Selecting another source clears stale evidence while verification is pending");
-                release.countDown();await(()->pane.lookupAll(".text-area").stream().anyMatch(n->((TextArea)n).getText().contains("new-method")),()->{pane.close();timelines();});
+                release.countDown();await(()->pane.lookupAll(".text-area").stream().anyMatch(n->((TextArea)n).getText().contains("new-method")),()->{
+                    pane.setRows(json.createArrayNode());pane.setRows(rows);
+                    await(()->pane.table().getItems().size()==2,()->{require(true,"Clearing and restoring the same source rebuilds the evidence index");pane.close();timelines();});
+                });
             });
         });
     }
