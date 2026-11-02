@@ -29,14 +29,14 @@ class MonitoringRuntimeIntegrationTest {
         MonitoringRuntime collector = null;
         try {
             awaitLine(input, "READY");
-            var defaults = MonitoringConfig.defaults();
+            var defaults = MonitoringConfig.defaults();var o=defaults.overhead();
             var config = new MonitoringConfig(2,
                     new MonitoringConfig.Scope(List.of(), List.of("agentfixtures.apppipeline.TargetLoop"), List.of(), List.of("main")),
                     new MonitoringConfig.Sampling(100, 50, 512, 1, MonitoringConfig.TailOverflowPolicy.PROMOTE),
                     new MonitoringConfig.Output(directory.toString(), dual ? List.of(com.agentmonitor.model.output.ExporterType.OTLP,com.agentmonitor.model.output.ExporterType.NETTY,com.agentmonitor.model.output.ExporterType.FILE) : defaults.output().exporters(),
                             new MonitoringConfig.Capture(dual, dual, false), defaults.output().spanFiles(), defaults.output().retention()),
                     new MonitoringConfig.Resource("pipeline-test", "1", "test"),
-                    new MonitoringConfig.Dependencies(false, false), defaults.analysis());
+                    new MonitoringConfig.Dependencies(false, false), defaults.analysis(),defaults.diagnostics(),new MonitoringConfig.Overhead(false,o.queueMaxBytes(),o.highWatermarkPercent(),o.lowWatermarkPercent(),o.minimumSamplingRatePercent(),o.adviceBudgetNanosPerSecond(),o.recoveryMillis()),defaults.experiment());
             collector = new MonitoringRuntime(Long.toString(child.pid()), config);
             collector.start();
             MonitoringSession session = collector.session();

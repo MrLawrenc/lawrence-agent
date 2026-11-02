@@ -47,7 +47,7 @@ class DiagnosticTaskTest {
     }
 
     @Test @Timeout(30) void cancellingOwnedJfrRecordingClosesOnlyThatRecordingAndKeepsTargetAlive() throws Exception {
-        Process target=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin/java").toString(),"-Djava.rmi.server.hostname=127.0.0.1","-cp",System.getProperty("java.class.path"),WaitingJvm.class.getName()).redirectError(directory.resolve("target.err").toFile()).start();
+        Process target=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin/java").toString(),"-Djava.rmi.server.hostname=127.0.0.1","-cp",System.getProperty("java.class.path"),WaitingJvm.class.getName()).redirectErrorStream(true).start();
         var worker=Executors.newSingleThreadExecutor();var task=new DiagnosticTask();Future<?> result=null;
         try {
             assertEquals("READY",target.inputReader().readLine());
@@ -67,7 +67,7 @@ class DiagnosticTaskTest {
                 assertTrue(bean.getRecordings().stream().anyMatch(r->r.getId()==userRecording));bean.closeRecording(userRecording);
                 assertFalse(Files.exists(directory.resolve("profile/profile.jfr")));
             }
-        } finally {task.requestCancel();if(result!=null)try{result.get(5,TimeUnit.SECONDS);}catch(Exception ignored){}worker.shutdownNow();target.destroy();target.waitFor(5,TimeUnit.SECONDS);}
+        } finally {task.requestCancel();if(result!=null)try{result.get(5,TimeUnit.SECONDS);}catch(Exception ignored){}worker.shutdown();target.getOutputStream().write(10);target.getOutputStream().close();assertTrue(target.waitFor(10,TimeUnit.SECONDS),"Owned JFR fixture must exit after stdin completion");target.getInputStream().close();target.getErrorStream().close();assertTrue(worker.awaitTermination(5,TimeUnit.SECONDS));}
     }
     public static final class WaitingJvm {
         public static void main(String[] args)throws Exception {System.out.println("READY");System.out.flush();System.in.read();}

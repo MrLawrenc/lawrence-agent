@@ -82,13 +82,13 @@ class MonitorCliTest {
         } finally { targetOut.println("EXIT"); if (!target.waitFor(3, TimeUnit.SECONDS)) target.destroyForcibly(); }
     }
     private Path writeCaptureConfig() throws IOException {
-        var d = MonitoringConfig.defaults();
+        var d = MonitoringConfig.defaults();var o=d.overhead();
         var config = new MonitoringConfig(2,
                 new MonitoringConfig.Scope(List.of(), List.of("agentfixtures.clipipeline.TargetLoop"), List.of(), List.of("main")),
                 new MonitoringConfig.Sampling(100, 50, 512, 1, MonitoringConfig.TailOverflowPolicy.PROMOTE),
                 new MonitoringConfig.Output(directory.resolve("captures").toString(), d.output().exporters(),
                     new MonitoringConfig.Capture(false, false, false), d.output().spanFiles(), d.output().retention()),
-                d.resource(), new MonitoringConfig.Dependencies(false, false), d.analysis());
+                d.resource(), new MonitoringConfig.Dependencies(false, false), d.analysis(),d.diagnostics(),new MonitoringConfig.Overhead(false,o.queueMaxBytes(),o.highWatermarkPercent(),o.lowWatermarkPercent(),o.minimumSamplingRatePercent(),o.adviceBudgetNanosPerSecond(),o.recoveryMillis()),d.experiment());
         Path yaml = directory.resolve("monitor.yml"); Files.writeString(yaml, MonitoringConfigYaml.write(config));
         return yaml;
     }

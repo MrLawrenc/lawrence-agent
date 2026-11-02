@@ -117,7 +117,7 @@ public final class EvidenceStore {
         if(trace.length()>256||method.length()>8192||thread.length()>64||row.get("threadName").toString().length()>512)throw new IOException("Evidence metadata exceeds bounded query limits");
         if(file.equals("agent-logs/request-metrics.json")){String endpoint=value.path("endpoint").asText();if(endpoint.length()>8192)throw new IOException("Endpoint metadata exceeds bounded query limits");row.put("endpoint",endpoint);row.put("kind","request_metrics");row.put("aggregationScope","capture_window_not_individual_request");}
         String encoded=JSON.writeValueAsString(row);long length=encoded.getBytes(java.nio.charset.StandardCharsets.UTF_8).length+1;
-        if(length>MAX_INDEX-bytes[0]){bytes[0]=MAX_INDEX;return;}writer.write(encoded);writer.newLine();bytes[0]+=length;records[0]++;
+        if(length>MAX_INDEX-bytes[0]){bytes[0]=MAX_INDEX;return;}writer.write(encoded);writer.write('\n');bytes[0]+=length;records[0]++;
     }
     public Map<String,Object> query(Path selected,Query query)throws Exception {
         Path root=selected.toRealPath();JsonNode catalog=catalogOrBuild(root);List<Map<String,Object>> matches=new ArrayList<>();long[] count={0};

@@ -53,7 +53,12 @@ jobs:
       - name: Build platform release candidate
         if: matrix.scale == '1.0'
         shell: bash
-        run: python3 scripts/package-candidate.py --output build/platform-candidate
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python scripts/package-candidate.py --output build/platform-candidate
+          else
+            python3 scripts/package-candidate.py --output build/platform-candidate
+          fi
       - name: Preserve platform candidate
         if: success() && matrix.scale == '1.0'
         uses: actions/upload-artifact@v7
@@ -68,6 +73,5 @@ jobs:
           name: desktop-${{ matrix.os }}-${{ matrix.scale }}
           path: |
             monitor-app/build/ui-preview
-            monitor-core/build/test-results
-            monitor-cli/build/test-results
+            **/build/test-results
           retention-days: 7

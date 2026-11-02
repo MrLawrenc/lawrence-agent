@@ -20,11 +20,12 @@ class HttpDistributedIntegrationTest {
         Path base=Files.createDirectories(directory.resolve(role));Process child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin/java").toString(),"-Djava.rmi.server.hostname=127.0.0.1","-Dagent.test.redis.port="+redisPort,"-cp",System.getProperty("java.class.path"),"agentfixtures.http.HttpServiceTarget",role,downstream,base.toString()).redirectError(base.resolve("target.err").toFile()).start();children.add(child);return child;
     }
     private String address(Process child)throws Exception{String line=child.inputReader().readLine();assertNotNull(line,"Target failed: "+directory);assertTrue(line.startsWith("READY "),line);return "http://127.0.0.1:"+line.substring(6);}
+    // Exact-count transport assertions use a fixed policy; adaptive sampling has dedicated tests.
     private MonitoringConfig config(String role,int sampling){
-        var d=MonitoringConfig.defaults();return new MonitoringConfig(2,new MonitoringConfig.Scope(List.of("agentfixtures.http"),List.of(),List.of(),List.of()),
+        var d=MonitoringConfig.defaults();var o=d.overhead();return new MonitoringConfig(2,new MonitoringConfig.Scope(List.of("agentfixtures.http"),List.of(),List.of(),List.of()),
                 new MonitoringConfig.Sampling(sampling,60_000,512,1,MonitoringConfig.TailOverflowPolicy.PROMOTE),
                 new MonitoringConfig.Output(directory.resolve("captures").toString(),d.output().exporters(),new MonitoringConfig.Capture(false,false,false),d.output().spanFiles(),d.output().retention()),
-                new MonitoringConfig.Resource(role,"test","test"),d.dependencies(),d.analysis(),new MonitoringConfig.Diagnostics(false,1000,1000,100,false,false,d.diagnostics().trigger()));
+                new MonitoringConfig.Resource(role,"test","test"),d.dependencies(),d.analysis(),new MonitoringConfig.Diagnostics(false,1000,1000,100,false,false,d.diagnostics().trigger()),new MonitoringConfig.Overhead(false,o.queueMaxBytes(),o.highWatermarkPercent(),o.lowWatermarkPercent(),o.minimumSamplingRatePercent(),o.adviceBudgetNanosPerSecond(),o.recoveryMillis()),d.experiment());
     }
     @Test @Timeout(100) void realThreeServiceChainRepeatedCallsAsyncAndIndependentMetrics()throws Exception{
         try(var redis=new java.net.ServerSocket(0,1,InetAddress.getLoopbackAddress())){

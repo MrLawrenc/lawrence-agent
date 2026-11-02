@@ -8,6 +8,7 @@ import pathlib
 import platform
 import shutil
 import subprocess
+import sys
 
 
 def main():
@@ -26,7 +27,7 @@ def main():
     output = output.resolve()
     if output.exists():
         parser.error('output must be a new directory')
-    subprocess.run(['python3' if system != 'Windows' else 'python', str(repo / 'scripts/generate-native-icons.py'), '--check'], cwd=repo, check=True)
+    subprocess.run([sys.executable, str(repo / 'scripts/generate-native-icons.py'), '--check'], cwd=repo, check=True)
     tasks = [':monitor-app:shadowJar', ':monitor-app:distZip', ':monitor-cli:installDist', ':monitor-cli:distZip', ':monitor-cli:shadowJar']
     if system == 'Darwin':
         tasks.append(':monitor-app:packageMacApp')
@@ -51,7 +52,11 @@ def main():
             shutil.make_archive(str(output / 'AgentMonitor-Windows'), 'zip', native.parent, native.name)
     artifacts = []
     for file in sorted(output.iterdir()):
-        digest = hashlib.file_digest(file.open('rb'), 'sha256').hexdigest()
+        digest = hashlib.sha256()
+        with file.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+        digest = digest.hexdigest()
         artifacts.append({'file': file.name, 'bytes': file.stat().st_size, 'sha256': digest})
     (output / 'SHA256SUMS').write_text(''.join(f"{a['sha256']}  {a['file']}\n" for a in artifacts), encoding='utf-8')
     manifest = {'commit': commit, 'workingTreeClean': not status, 'workingTreeStatus': status.splitlines(), 'system': system, 'architecture': platform.machine(), 'java': subprocess.run(['java', '-version'], capture_output=True, text=True, check=True).stderr.strip(), 'buildTasks': tasks, 'artifacts': artifacts, 'verification': 'Packaging succeeded. Test results and long-capture receipts must be reviewed separately; packaging does not imply verification passed.'}

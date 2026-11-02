@@ -50,7 +50,7 @@ class NettySpanExporterTest {
                 try (Connection reconnected = accept(collector)) {
                     assertEquals(TelemetryProtocol.message(ProtocolMessageType.HELLO), reconnected.readLine());
                     assertEquals(TelemetryProtocol.message(ProtocolMessageType.READY), reconnected.readLine());
-                    assertTrue(exporter.export(span()).delivered());
+                    exportAfterPublication(exporter);
                     assertTrue(reconnected.readLine().contains("\"type\":\"span\""));
 
                     // A stale retry task must not establish a second connection after the first
@@ -82,10 +82,7 @@ class NettySpanExporterTest {
                         exporter.ready();
                         // Wait until publication catches up if this thread won the race before
                         // reconnect. This exercises the ordering boundary, not delivery retry.
-                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
-                        while (!exporter.export(span()).delivered() && System.nanoTime() < deadline) {
-                            Thread.onSpinWait();
-                        }
+                        exportAfterPublication(exporter);
                         return null;
                     });
                     begin.countDown();
@@ -93,7 +90,7 @@ class NettySpanExporterTest {
                     assertEquals(TelemetryProtocol.message(ProtocolMessageType.HELLO), reconnected.readLine());
                     assertEquals(TelemetryProtocol.message(ProtocolMessageType.READY), reconnected.readLine());
                     assertTrue(reconnected.readLine().contains("\"type\":\"span\""));
-                    race.get(1, TimeUnit.SECONDS);
+                    race.get(5, TimeUnit.SECONDS);
                 }
             } finally {
                 exporter.close();
@@ -165,6 +162,16 @@ class NettySpanExporterTest {
         collector.setSoTimeout(timeoutMillis);
         assertThrows(SocketTimeoutException.class, collector::accept,
                 "no retry connection may be created after the exporter becomes terminal");
+    }
+
+    private static void exportAfterPublication(NettySpanExporter exporter) throws InterruptedException {
+        // A peer can observe queued HELLO/READY bytes before channel publication completes.
+        // Retry only explicit rejection (no frame queued), never an accepted/uncertain write.
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(IO_TIMEOUT_MILLIS);
+        while (!exporter.export(span()).delivered()) {
+            assertTrue(System.nanoTime() < deadline, "reconnected channel was not published before the deadline");
+            Thread.sleep(5);
+        }
     }
 
     private static SpanData span() {
